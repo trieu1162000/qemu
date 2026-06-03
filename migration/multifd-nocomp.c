@@ -24,8 +24,60 @@
 #include "qemu/error-report.h"
 #include "trace.h"
 #include "qemu-file.h"
+#include "page_cache.h"
+#include "xbzrle.h"
 
 static MultiFDSendData *multifd_ram_send;
+
+/*
+ * multifd_xbzrle_state_alloc: allocate per-thread XBZRLE state.
+ *
+ * Called from send_setup and recv_setup when migrate_xbzrle() is true.
+ * cache_size is the share of the global XBZRLE cache assigned to this thread.
+ */
+static int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
+                                       uint64_t cache_size, Error **errp)
+{
+    s->cache = cache_init(cache_size, TARGET_PAGE_SIZE, errp);
+    if (!s->cache) {
+        return -1;
+    }
+    s->encoded_buf = g_try_malloc(TARGET_PAGE_SIZE);
+    if (!s->encoded_buf) {
+        cache_fini(s->cache);
+        s->cache = NULL;
+        error_setg(errp, "multifd xbzrle: failed to allocate encoded_buf");
+        return -1;
+    }
+    s->current_buf = g_try_malloc(TARGET_PAGE_SIZE);
+    if (!s->current_buf) {
+        g_free(s->encoded_buf);
+        s->encoded_buf = NULL;
+        cache_fini(s->cache);
+        s->cache = NULL;
+        error_setg(errp, "multifd xbzrle: failed to allocate current_buf");
+        return -1;
+    }
+    s->cache_hits   = 0;
+    s->cache_misses = 0;
+    s->overflows    = 0;
+    return 0;
+}
+
+/*
+ * multifd_xbzrle_state_free: release per-thread XBZRLE state.
+ */
+static void multifd_xbzrle_state_free(MultiFDXBZRLEState *s)
+{
+    if (s->cache) {
+        cache_fini(s->cache);
+        s->cache = NULL;
+    }
+    g_free(s->encoded_buf);
+    s->encoded_buf = NULL;
+    g_free(s->current_buf);
+    s->current_buf = NULL;
+}
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)
 {
@@ -77,11 +129,35 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         p->iov = g_new0(struct iovec, page_count);
     }
 
+    if (migrate_xbzrle()) {
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        /*
+         * Thread 0 is the hot-page thread and receives a larger share.
+         * Remaining threads share the rest equally.
+         * With only one channel, it gets the full cache.
+         */
+        uint64_t cache_size;
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size, errp)) {
+            g_free(p->iov);
+            p->iov = NULL;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
 static void multifd_nocomp_send_cleanup(MultiFDSendParams *p, Error **errp)
 {
+    multifd_xbzrle_state_free(&p->xbzrle);
     g_free(p->iov);
     p->iov = NULL;
 }
@@ -151,11 +227,33 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
 {
     p->iov = g_new0(struct iovec, multifd_ram_page_count());
+
+    if (migrate_xbzrle()) {
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        uint64_t cache_size;
+
+        /* Mirror the same cache split as the sender. */
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size, errp)) {
+            g_free(p->iov);
+            p->iov = NULL;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
 static void multifd_nocomp_recv_cleanup(MultiFDRecvParams *p)
 {
+    multifd_xbzrle_state_free(&p->xbzrle);
     g_free(p->iov);
     p->iov = NULL;
 }

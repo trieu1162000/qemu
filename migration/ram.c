@@ -1152,6 +1152,62 @@ static void migration_bitmap_sync(RAMState *rs, bool last_stage)
     }
 
     memory_global_after_dirty_log_sync();
+
+    /*
+     * Update per-page 2-bit hotness counters in block->hotness_counters.
+     * Scan bmap word-by-word (64 pages at a time): skip zero words fast,
+     * only test individual bits within non-zero words. This avoids huge
+     * test_bit calls on large VMs.
+     */
+    WITH_RCU_READ_LOCK_GUARD() {
+        RAMBlock *b;
+        RAMBLOCK_FOREACH_NOT_IGNORED(b) {
+            unsigned long pages = b->max_length >> TARGET_PAGE_BITS;
+            unsigned long nwords = DIV_ROUND_UP(pages, BITS_PER_LONG);
+            unsigned long wi;
+
+            if (!b->hotness_counters) {
+                continue;
+            }
+
+            for (wi = 0; wi < nwords; wi++) {
+                unsigned long dirty_mask = b->bmap[wi];
+                unsigned long base = wi * BITS_PER_LONG;
+                unsigned long bit;
+                unsigned long end = MIN(base + BITS_PER_LONG, pages);
+
+                if (dirty_mask == 0) {
+                    /* All 64 pages clean — bulk decrement non-zero counters */
+                    for (bit = base; bit < end; bit++) {
+                        if (b->hotness_counters[bit]) {
+                            b->hotness_counters[bit]--;
+                        }
+                    }
+                } else if (dirty_mask == ~0UL) {
+                    /* All 64 pages dirty — bulk increment capped at 3 */
+                    for (bit = base; bit < end; bit++) {
+                        if (b->hotness_counters[bit] < 3) {
+                            b->hotness_counters[bit]++;
+                        }
+                    }
+                } else {
+                    /* Mixed word — test each bit */
+                    for (bit = base; bit < end; bit++) {
+                        if (test_bit(bit, b->bmap)) {
+                            if (b->hotness_counters[bit] < 3) {
+                                b->hotness_counters[bit]++;
+                            }
+                        } else {
+                            if (b->hotness_counters[bit] > 0) {
+                                b->hotness_counters[bit]--;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     trace_migration_bitmap_sync_end(rs->num_dirty_pages_period);
 
     end_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
@@ -2447,6 +2503,8 @@ static void ram_bitmaps_destroy(void)
         block->clear_bmap = NULL;
         g_free(block->bmap);
         block->bmap = NULL;
+        g_free(block->hotness_counters);
+        block->hotness_counters = NULL;
         g_free(block->file_bmap);
         block->file_bmap = NULL;
     }
@@ -2841,6 +2899,9 @@ static void ram_list_init_bitmaps(void)
              * guest memory.
              */
             block->bmap = bitmap_new(pages);
+            if (migrate_xbzrle()) {
+                block->hotness_counters = g_malloc0(pages);
+            }
             bitmap_set(block->bmap, 0, pages);
             if (migrate_mapped_ram()) {
                 block->file_bmap = bitmap_new(pages);

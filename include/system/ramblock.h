@@ -47,6 +47,15 @@ struct RAMBlock {
     unsigned long *bmap;
 
     /*
+     * Per-page 2-bit saturating hotness counters. Incremented when
+     * page is dirty at bitmap sync, decremented when clean.
+     *
+     * Used by multifd hot-page routing. One byte per target page,
+     * and allocated/freed alongside bmap.
+     */
+    uint8_t *hotness_counters;
+
+    /*
      * Below fields are only used by mapped-ram migration
      */
     /* bitmap of pages present in the migration file */

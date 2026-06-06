@@ -411,6 +411,69 @@ bool multifd_send(MultiFDSendData **send_data)
     return true;
 }
 
+/*
+ * Send data through a specific channel (targeted flush).
+ *
+ * Unlike multifd_send() which finds the next idle channel via round-robin,
+ * this function targets one specific channel. Used by hot-page routing
+ * (multifd_queue_page) where each page must go to a deterministic channel.
+ *
+ * Waits for the target channel to become idle, swaps data pointers,
+ * then wakes the channel thread. The caller's *send_data is swapped with
+ * the channel's processed (empty) data.
+ *
+ * Must not be called concurrently with multifd_send() — both are
+ * called from the main migration thread so this is safe.
+ */
+bool multifd_send_channel(MultiFDSendData **send_data, int ch)
+{
+    MultiFDSendParams *p = &multifd_send_state->params[ch];
+
+    if (multifd_send_should_exit()) {
+        return false;
+    }
+
+    /* Wait for this specific channel to finish any previous job.
+     *
+     * We wait on the shared channels_ready semaphore. This semaphore is
+     * posted by ANY channel thread when it finishes a job or sync.
+     * When we wake up, we re-check pending_job — if it's still true,
+     * we go back to sleep. This is safe because:
+     *
+     * (a) The main thread is the sole consumer of channels_ready during
+     *     page iteration (multifd_send_sync_main only runs at sync points).
+     *
+     * (b) Each wakeup is a genuine sem_post from SOME finishing channel,
+     *     so the semaphore count stays balanced — no livelock.
+     *
+     * (c) The target channel WILL eventually finish and post its own
+     *     channels_ready, at which point pending_job becomes false.
+     *
+     * Performance note: if other channels finish while we wait, we may
+     * wake up and re-check before our target channel is done. This is
+     * a small overhead from spurious wakeups, not a deadlock.
+     */
+    while (qatomic_read(&p->pending_job)) {
+        qemu_sem_wait(&multifd_send_state->channels_ready);
+    }
+
+    /* Channel should have cleared its data after processing */
+    assert(multifd_payload_empty(p->data));
+
+    /*
+     * Swap: channel gets our filled data, we get channel's empty data
+     * for future accumulation.
+     */
+    MultiFDSendData *tmp = *send_data;
+    *send_data = p->data;
+    p->data = tmp;
+
+    qatomic_store_release(&p->pending_job, true);
+    qemu_sem_post(&p->sem);
+
+    return true;
+}
+
 /* Multifd send side hit an error; remember it and prepare to quit */
 static void multifd_send_error_propagate(Error *err)
 {

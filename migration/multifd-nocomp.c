@@ -36,7 +36,7 @@ static MultiFDSendData *multifd_ram_send;
  * cache_size is the share of the global XBZRLE cache assigned to this thread.
  */
 static int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
-                                       uint64_t cache_size, Error **errp)
+                                      uint64_t cache_size, Error **errp)
 {
     s->cache = cache_init(cache_size, TARGET_PAGE_SIZE, errp);
     if (!s->cache) {

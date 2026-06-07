@@ -143,6 +143,80 @@ static void test_precopy_unix_xbzrle(char *name, MigrateCommon *args)
 }
 
 static void *
+migrate_hook_start_multifd_xbzrle(QTestState *from,
+                                  QTestState *to)
+{
+    migrate_set_parameter_int(from, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(to, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(from, "multifd-channels", 2);
+    migrate_set_parameter_int(to, "multifd-channels", 2);
+    return NULL;
+}
+
+static void test_multifd_tcp_xbzrle(char *name, MigrateCommon *args)
+{
+    args->start_hook = migrate_hook_start_multifd_xbzrle;
+    args->iterations = 2;
+    args->live = true;
+    args->start.caps[MIGRATION_CAPABILITY_MULTIFD] = true;
+    args->start.caps[MIGRATION_CAPABILITY_XBZRLE] = true;
+
+    test_precopy_common(args);
+}
+
+static void *
+migrate_hook_start_multifd_zlib_xbzrle(QTestState *from,
+                                       QTestState *to)
+{
+    migrate_set_parameter_int(from, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(to, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(from, "multifd-zlib-level", 2);
+    migrate_set_parameter_int(to, "multifd-zlib-level", 2);
+    migrate_set_parameter_int(from, "multifd-channels", 2);
+    migrate_set_parameter_int(to, "multifd-channels", 2);
+    set_multifd_compression(from, to, "zlib");
+    return NULL;
+}
+
+static void test_multifd_tcp_zlib_xbzrle(char *name, MigrateCommon *args)
+{
+    args->start_hook = migrate_hook_start_multifd_zlib_xbzrle;
+    args->iterations = 2;
+    args->live = true;
+    args->start.caps[MIGRATION_CAPABILITY_MULTIFD] = true;
+    args->start.caps[MIGRATION_CAPABILITY_XBZRLE] = true;
+
+    test_precopy_common(args);
+}
+
+#ifdef CONFIG_ZSTD
+static void *
+migrate_hook_start_multifd_zstd_xbzrle(QTestState *from,
+                                       QTestState *to)
+{
+    migrate_set_parameter_int(from, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(to, "xbzrle-cache-size", 33554432);
+    migrate_set_parameter_int(from, "multifd-zstd-level", 2);
+    migrate_set_parameter_int(to, "multifd-zstd-level", 2);
+    migrate_set_parameter_int(from, "multifd-channels", 2);
+    migrate_set_parameter_int(to, "multifd-channels", 2);
+    set_multifd_compression(from, to, "zstd");
+    return NULL;
+}
+
+static void test_multifd_tcp_zstd_xbzrle(char *name, MigrateCommon *args)
+{
+    args->start_hook = migrate_hook_start_multifd_zstd_xbzrle;
+    args->iterations = 2;
+    args->live = true;
+    args->start.caps[MIGRATION_CAPABILITY_MULTIFD] = true;
+    args->start.caps[MIGRATION_CAPABILITY_XBZRLE] = true;
+
+    test_precopy_common(args);
+}
+#endif /* CONFIG_ZSTD */
+
+static void *
 migrate_hook_start_precopy_tcp_multifd_zlib(QTestState *from,
                                             QTestState *to)
 {
@@ -209,5 +283,13 @@ void migration_test_add_compression(MigrationTestEnv *env)
     if (g_test_slow()) {
         migration_test_add("/migration/precopy/unix/xbzrle",
                            test_precopy_unix_xbzrle);
+        migration_test_add("/migration/multifd/tcp/plain/xbzrle",
+                           test_multifd_tcp_xbzrle);
+        migration_test_add("/migration/multifd/tcp/plain/zlib/xbzrle",
+                           test_multifd_tcp_zlib_xbzrle);
+#ifdef CONFIG_ZSTD
+        migration_test_add("/migration/multifd/tcp/plain/zstd/xbzrle",
+                           test_multifd_tcp_zstd_xbzrle);
+#endif
     }
 }

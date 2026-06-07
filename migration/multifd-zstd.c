@@ -68,6 +68,28 @@ static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
     }
     p->compress_data = z;
 
+    if (migrate_xbzrle()) {
+        uint32_t page_count = multifd_ram_page_count();
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        uint64_t cache_size;
+
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
+            ZSTD_freeCStream(z->zcs);
+            g_free(z->zbuff);
+            g_free(z);
+            return -1;
+        }
+    }
+
     /* Needs 2 IOVs, one for packet header and one for compressed data */
     p->iov = g_new0(struct iovec, 2);
     return 0;
@@ -84,6 +106,7 @@ static void multifd_zstd_send_cleanup(MultiFDSendParams *p, Error **errp)
     g_free(p->compress_data);
     p->compress_data = NULL;
 
+    multifd_xbzrle_state_free(&p->xbzrle);
     g_free(p->iov);
     p->iov = NULL;
 }
@@ -92,11 +115,43 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     MultiFDPages_t *pages = &p->data->u.ram;
     struct zstd_data *z = p->compress_data;
+    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache;
     int ret;
     uint32_t i;
 
     if (!multifd_send_prepare_common(p)) {
         goto out;
+    }
+
+    if (use_xbzrle && pages->normal_num > 0) {
+        /*
+         * XBZRLE-encode first, then zstd-compress the compacted blob.
+         */
+        multifd_xbzrle_encode_pages(p);
+
+        ZSTD_CCtx_reset(z->zcs, ZSTD_reset_session_only);
+        z->in.src = p->xbzrle.data_buf;
+        z->in.size = p->next_packet_size;
+        z->in.pos = 0;
+        z->out.dst = z->zbuff;
+        z->out.size = z->zbuff_len;
+        z->out.pos = 0;
+
+        do {
+            ret = ZSTD_compressStream2(z->zcs, &z->out, &z->in, ZSTD_e_end);
+        } while (ret > 0 && (z->in.size > z->in.pos)
+                         && (z->out.size > z->out.pos));
+        if (ret > 0 && (z->in.size > z->in.pos)) {
+            error_setg(errp, "multifd %u: zstd compress xbzrle failed",
+                       p->id);
+            return -1;
+        }
+        if (ZSTD_isError(ret)) {
+            error_setg(errp, "multifd %u: zstd compress xbzrle error %s",
+                       p->id, ZSTD_getErrorName(ret));
+            return -1;
+        }
+        goto fill_iov:
     }
 
     z->out.dst = z->zbuff;
@@ -136,6 +191,7 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
             return -1;
         }
     }
+fill_iov:
     p->iov[p->iovs_num].iov_base = z->zbuff;
     p->iov[p->iovs_num].iov_len = z->out.pos;
     p->iovs_num++;
@@ -143,7 +199,13 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
 
 out:
     p->flags |= MULTIFD_FLAG_ZSTD;
+    if (use_xbzrle && pages->normal_num > 0) {
+        p->flags |= MULTIFD_FLAG_XBZRLE;
+    }
     multifd_send_fill_packet(p);
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        multifd_xbzrle_write_ext(p);
+    }
     return 0;
 }
 
@@ -178,6 +240,29 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
         error_setg(errp, "multifd %u: out of memory for zbuff", p->id);
         return -1;
     }
+
+    if (migrate_xbzrle()) {
+        uint32_t page_count = multifd_ram_page_count();
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        uint64_t cache_size;
+
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
+            g_free(z->zbuff);
+            ZSTD_freeDStream(z->zds);
+            g_free(z);
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -191,18 +276,16 @@ static void multifd_zstd_recv_cleanup(MultiFDRecvParams *p)
     z->zbuff = NULL;
     g_free(p->compress_data);
     p->compress_data = NULL;
+    multifd_xbzrle_state_free(&p->xbzrle);
 }
 
 static int multifd_zstd_recv(MultiFDRecvParams *p, Error **errp)
 {
     uint32_t in_size = p->next_packet_size;
-    uint32_t out_size = 0;
     uint32_t page_size = multifd_ram_page_size();
-    uint32_t expected_size = p->normal_num * page_size;
     uint32_t flags = p->flags & MULTIFD_FLAG_COMPRESSION_MASK;
     struct zstd_data *z = p->compress_data;
     int ret;
-    int i;
 
     if (flags != MULTIFD_FLAG_ZSTD) {
         error_setg(errp, "multifd %u: flags received %x flags expected %x",
@@ -222,6 +305,38 @@ static int multifd_zstd_recv(MultiFDRecvParams *p, Error **errp)
     if (ret != 0) {
         return ret;
     }
+
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        if (!p->xbzrle.cache) {
+            error_setg(errp, "multifd %u: received XBZRLE packet but "
+                       "XBZRLE is not enabled", p->id);
+            return -1;
+        }
+        ZSTD_DCtx_reset(z->zds, ZSTD_reset_session_only);
+        z->in.src = z->zbuff;
+        z->in.size = in_size;
+        z->in.pos = 0;
+        z->out.dst = p->xbzrle.data_buf;
+        z->out.size = multifd_ram_page_count() * page_size;
+        z->out.pos = 0;
+
+        do {
+            ret = ZSTD_decompressStream(z->zds, &z->out, &z->in);
+        } while (ret > 0 && (z->in.size > z->in.pos)
+                         && (z->out.size > z->out.pos));
+        if (ZSTD_isError(ret)) {
+            error_setg(errp, "multifd %u: zstd decompress xbzrle error %s",
+                       p->id, ZSTD_getErrorName(ret));
+            return ret;
+        }
+
+        return multifd_xbzrle_decode_pages(p, errp);
+    }
+
+    /* Fallback to standard page-by-page decompression */
+    uint32_t out_size = 0;
+    uint32_t expected_size = p->normal_num * page_size;
+    int i;
 
     z->in.src = z->zbuff;
     z->in.size = in_size;

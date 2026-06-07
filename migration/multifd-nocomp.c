@@ -106,7 +106,9 @@ static int route_page(RAMBlock *block, ram_addr_t offset)
  * cache_size is the share of the global XBZRLE cache assigned to this thread.
  */
 static int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
-                                      uint64_t cache_size, Error **errp)
+                                      uint64_t cache_size,
+                                      uint32_t page_count,
+                                      Error **errp)
 {
     s->cache = cache_init(cache_size, TARGET_PAGE_SIZE, errp);
     if (!s->cache) {
@@ -114,24 +116,34 @@ static int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
     }
     s->encoded_buf = g_try_malloc(TARGET_PAGE_SIZE);
     if (!s->encoded_buf) {
-        cache_fini(s->cache);
-        s->cache = NULL;
         error_setg(errp, "multifd xbzrle: failed to allocate encoded_buf");
-        return -1;
+        goto err_cache;
     }
-    s->current_buf = g_try_malloc(TARGET_PAGE_SIZE);
-    if (!s->current_buf) {
-        g_free(s->encoded_buf);
-        s->encoded_buf = NULL;
-        cache_fini(s->cache);
-        s->cache = NULL;
-        error_setg(errp, "multifd xbzrle: failed to allocate current_buf");
-        return -1;
+    s->meta_buf = g_try_malloc(TARGET_PAGE_SIZE);
+    if (!s->meta_buf) {
+        error_setg(errp, "multifd xbzrle: failed to allocate meta_buf");
+        goto err_encoded;
+    }
+    s->data_buf = g_try_malloc((size_t)page_count * TARGET_PAGE_SIZE);
+    if (!s->data_buf) {
+        error_setg(errp, "multifd xbzrle: failed to allocate data_buf");
+        goto err_meta;
     }
     s->cache_hits   = 0;
     s->cache_misses = 0;
     s->overflows    = 0;
     return 0;
+
+err_meta:
+    g_free(s->meta_buf);
+    s->meta_buf = NULL;
+err_encoded:
+    g_free(s->encoded_buf);
+    s->encoded_buf = NULL;
+err_cache:
+    cache_fini(s->cache);
+    s->cache = NULL;
+    return -1;
 }
 
 /*
@@ -139,14 +151,16 @@ static int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
  */
 static void multifd_xbzrle_state_free(MultiFDXBZRLEState *s)
 {
+    g_free(s->data_buf);
+    s->data_buf = NULL;
+    g_free(s->meta_buf);
+    s->meta_buf = NULL;
+    g_free(s->encoded_buf);
+    s->encoded_buf = NULL;
     if (s->cache) {
         cache_fini(s->cache);
         s->cache = NULL;
     }
-    g_free(s->encoded_buf);
-    s->encoded_buf = NULL;
-    g_free(s->current_buf);
-    s->current_buf = NULL;
 }
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)
@@ -224,7 +238,8 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         } else {
             cache_size = (total_cache / 2) / (nchannels - 1);
         }
-        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size, errp)) {
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
             g_free(p->iov);
             p->iov = NULL;
             return -1;
@@ -305,7 +320,9 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 
 static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
 {
-    p->iov = g_new0(struct iovec, multifd_ram_page_count());
+    uint32_t page_count = multifd_ram_page_count();
+
+    p->iov = g_new0(struct iovec, page_count);
 
     if (migrate_xbzrle()) {
         uint32_t nchannels = migrate_multifd_channels();
@@ -320,7 +337,8 @@ static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
         } else {
             cache_size = (total_cache / 2) / (nchannels - 1);
         }
-        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size, errp)) {
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
             g_free(p->iov);
             p->iov = NULL;
             return -1;

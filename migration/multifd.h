@@ -29,7 +29,7 @@ typedef struct MultiFDSendData MultiFDSendData;
  * When a dirty page hits in the cache, only the XOR delta (encoded
  * with run-length encoding) is sent instead of the full page.
  *
- * cache, encoded_buf, and current_buf are NULL when XBZRLE is not
+ * cache, encoded_buf, and meta_buf are NULL when XBZRLE is not
  * enabled for multifd (migrate_xbzrle() returns false).
  */
 typedef struct MultiFDXBZRLEState {
@@ -37,8 +37,10 @@ typedef struct MultiFDXBZRLEState {
     PageCache  *cache;
     /* Scratch buffer for the XOR-RLE encoded output (TARGET_PAGE_SIZE) */
     uint8_t    *encoded_buf;
-    /* Scratch buffer for a copy of the current page (TARGET_PAGE_SIZE) */
-    uint8_t    *current_buf;
+    /* Scratch buffer for per-packet metadata (bitmap + len[]) */
+    uint8_t    *meta_buf;
+    /* Buffer for compacted per-page payload (page_count * TARGET_PAGE_SIZE) */
+    uint8_t    *data_buf;
     /* Statistics */
     uint64_t    cache_hits;
     uint64_t    cache_misses;
@@ -99,6 +101,7 @@ MultiFDRecvData *multifd_get_recv_data(void);
  * (MultiFDPacketDeviceState_t), not RAM data (MultiFDPacket_t).
  */
 #define MULTIFD_FLAG_DEVICE_STATE (32 << 1)
+#define MULTIFD_FLAG_XBZRLE (64 << 1)
 
 /* This value needs to be a multiple of qemu_target_page_size() */
 #define MULTIFD_PACKET_SIZE (512 * 1024)

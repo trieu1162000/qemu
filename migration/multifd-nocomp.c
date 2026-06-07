@@ -25,7 +25,77 @@
 #include "trace.h"
 #include "qemu-file.h"
 
-static MultiFDSendData *multifd_ram_send;
+/* Knuth multiplicative hash */
+#define KNUTH_MULTIPLICATIVE 2654435761ULL
+/* Hot-page routing threshold */
+#define XBZRLE_HOT_THRESHOLD 2
+
+static MultiFDSendData **channel_send;
+static int num_channels;
+
+/*
+ * Maps a page address to one of n buckets deterministically.
+ * Used to distribute cold pages across the cold channel pool.
+ */
+static uint32_t gpa_hash(ram_addr_t addr, uint32_t n)
+{
+    if (n <= 1) {
+        return 0;
+    }
+    return (uint32_t)((addr * KNUTH_MULTIPLICATIVE) % n);
+}
+
+/*
+ * page_is_hot: check if a page is "hot" based on its 2-bit counter.
+ *
+ * A page is hot when its saturating counter (updated at bitmap_sync)
+ * is >= XBZRLE_HOT_THRESHOLD (default 2). Returns false when XBZRLE
+ * is not enabled (counters will be NULL).
+ */
+static bool page_is_hot(RAMBlock *block, unsigned long page_index)
+{
+    if (!migrate_xbzrle() || !block->hotness_counters) {
+        return false;
+    }
+    return block->hotness_counters[page_index] >= XBZRLE_HOT_THRESHOLD;
+}
+
+/*
+ * route_page: determine target channel for a page based on hotness.
+ *
+ * Hot pages: channel 0 (dedicated hot channel with large XBZRLE cache).
+ * Cold pages: channels 1..N-1 (distributed via GPA hash).
+ *
+ * When XBZRLE is not enabled, all pages are "cold" and distributed
+ * across all channels for better load balancing.
+ */
+static int route_page(RAMBlock *block, ram_addr_t offset)
+{
+    uint32_t nchannels = migrate_multifd_channels();
+
+    if (nchannels <= 1) {
+        return 0;
+    }
+
+    if (!page_is_hot(block, offset >> TARGET_PAGE_BITS)) {
+        /* Cold: distribute across cold pool */
+        uint32_t cold_start = 0;
+        uint32_t n_cold = nchannels;
+
+        if (migrate_xbzrle()) {
+            cold_start = 1;
+            n_cold = nchannels - 1;
+        }
+
+        if (n_cold <= 1) {
+            return (int)cold_start;
+        }
+        return (int)(cold_start + gpa_hash(offset, n_cold));
+    }
+
+    /* Hot page -> dedicated hot channel */
+    return 0;
+}
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)
 {
@@ -39,12 +109,21 @@ void multifd_ram_payload_free(MultiFDPages_t *pages)
 
 void multifd_ram_save_setup(void)
 {
-    multifd_ram_send = multifd_send_data_alloc();
+    num_channels = migrate_multifd_channels();
+    channel_send = g_new0(MultiFDSendData *, num_channels);
+    for (int i = 0; i < num_channels; i++) {
+        channel_send[i] = multifd_send_data_alloc();
+    }
 }
 
 void multifd_ram_save_cleanup(void)
 {
-    g_clear_pointer(&multifd_ram_send, multifd_send_data_free);
+    for (int i = 0; i < num_channels; i++) {
+        g_clear_pointer(&channel_send[i], multifd_send_data_free);
+    }
+    g_free(channel_send);
+    channel_send = NULL;
+    num_channels = 0;
 }
 
 static void multifd_set_file_bitmap(MultiFDSendParams *p)
@@ -323,40 +402,40 @@ static inline void multifd_enqueue(MultiFDPages_t *pages, ram_addr_t offset)
 /* Returns true if enqueue successful, false otherwise */
 bool multifd_queue_page(RAMBlock *block, ram_addr_t offset)
 {
-    MultiFDPages_t *pages;
+    int ch = route_page(block, offset);
+    MultiFDPages_t *pages = &channel_send[ch]->u.ram;
 
-retry:
-    pages = &multifd_ram_send->u.ram;
-
-    if (multifd_payload_empty(multifd_ram_send)) {
+    if (multifd_payload_empty(channel_send[ch])) {
         multifd_pages_reset(pages);
-        multifd_set_payload_type(multifd_ram_send, MULTIFD_PAYLOAD_RAM);
+        multifd_set_payload_type(channel_send[ch], MULTIFD_PAYLOAD_RAM);
     }
 
-    /* If the queue is empty, we can already enqueue now */
     if (multifd_queue_empty(pages)) {
         pages->block = block;
         multifd_enqueue(pages, offset);
-        return true;
-    }
-
-    /*
-     * Not empty, meanwhile we need a flush.  It can because of either:
-     *
-     * (1) The page is not on the same ramblock of previous ones, or,
-     * (2) The queue is full.
-     *
-     * After flush, always retry.
-     */
-    if (pages->block != block || multifd_queue_full(pages)) {
-        if (!multifd_send(&multifd_ram_send)) {
-            return false;
+    } else {
+        /*
+         * Flush if block changed or page count is full.
+         * Only the target channel is flushed and other channels'
+         * accumulators stay intact.
+         */
+        if (pages->block != block || multifd_queue_full(pages)) {
+            if (!multifd_send_channel(&channel_send[ch], ch)) {
+                return false;
+            }
+            /* After swap: channel_send[ch] is now the channel's empty data */
+            pages = &channel_send[ch]->u.ram;
+            if (multifd_payload_empty(channel_send[ch])) {
+                multifd_pages_reset(pages);
+                multifd_set_payload_type(channel_send[ch], MULTIFD_PAYLOAD_RAM);
+            }
+            pages->block = block;
+            multifd_enqueue(pages, offset);
+        } else {
+            multifd_enqueue(pages, offset);
         }
-        goto retry;
     }
 
-    /* Not empty, and we still have space, do it! */
-    multifd_enqueue(pages, offset);
     return true;
 }
 
@@ -411,10 +490,13 @@ int multifd_ram_flush_and_sync(QEMUFile *f)
         return 0;
     }
 
-    if (!multifd_payload_empty(multifd_ram_send)) {
-        if (!multifd_send(&multifd_ram_send)) {
-            error_report("%s: multifd_send fail", __func__);
-            return -1;
+    /* Flush all non-empty per-channel accumulators */
+    for (int i = 0; i < num_channels; i++) {
+        if (!multifd_queue_empty(&channel_send[i]->u.ram)) {
+            if (!multifd_send_channel(&channel_send[i], i)) {
+                error_report("%s: multifd_send_channel fail", __func__);
+                return -1;
+            }
         }
     }
 

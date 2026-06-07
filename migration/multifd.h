@@ -421,6 +421,7 @@ void multifd_recv_zero_page_process(MultiFDRecvParams *p);
 
 void multifd_channel_connect(MultiFDSendParams *p, QIOChannel *ioc);
 bool multifd_send(MultiFDSendData **send_data);
+bool multifd_send_channel(MultiFDSendData **send_data, int ch);
 MultiFDSendData *multifd_send_data_alloc(void);
 void multifd_send_data_clear(MultiFDSendData *data);
 void multifd_send_data_free(MultiFDSendData *data);

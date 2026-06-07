@@ -19,6 +19,33 @@
 typedef struct MultiFDRecvData MultiFDRecvData;
 typedef struct MultiFDSendData MultiFDSendData;
 
+/*
+ * Per-thread XBZRLE delta compression state.
+ *
+ * Each multifd send/recv thread owns one of these independently.
+ * No locking is required because only the owning thread accesses it.
+ *
+ * The cache maps page addresses to their previously-sent content.
+ * When a dirty page hits in the cache, only the XOR delta (encoded
+ * with run-length encoding) is sent instead of the full page.
+ *
+ * cache, encoded_buf, and current_buf are NULL when XBZRLE is not
+ * enabled for multifd (migrate_xbzrle() returns false).
+ */
+typedef struct MultiFDXBZRLEState {
+    /* Per-thread page history: addr -> previous page content */
+    PageCache  *cache;
+    /* Scratch buffer for the XOR-RLE encoded output (TARGET_PAGE_SIZE) */
+    uint8_t    *encoded_buf;
+    /* Scratch buffer for a copy of the current page (TARGET_PAGE_SIZE) */
+    uint8_t    *current_buf;
+    /* Statistics */
+    uint64_t    cache_hits;
+    uint64_t    cache_misses;
+    /* Pages where encoded delta was larger than full page; sent as full */
+    uint64_t    overflows;
+} MultiFDXBZRLEState;
+
 typedef enum {
     /* No sync request */
     MULTIFD_SYNC_NONE = 0,
@@ -72,6 +99,9 @@ MultiFDRecvData *multifd_get_recv_data(void);
  * (MultiFDPacketDeviceState_t), not RAM data (MultiFDPacket_t).
  */
 #define MULTIFD_FLAG_DEVICE_STATE (32 << 1)
+
+/* To indicate the decompressed payload is XBZRLE-delta-encoded. */
+#define MULTIFD_FLAG_XBZRLE (64 << 1)
 
 /* This value needs to be a multiple of qemu_target_page_size() */
 #define MULTIFD_PACKET_SIZE (512 * 1024)
@@ -234,6 +264,8 @@ typedef struct {
     uint32_t iovs_num;
     /* used for compression methods */
     void *compress_data;
+    /* per-thread XBZRLE delta compression state */
+    MultiFDXBZRLEState xbzrle;
 }  MultiFDSendParams;
 
 typedef struct {
@@ -296,6 +328,8 @@ typedef struct {
     uint32_t zero_num;
     /* used for de-compression methods */
     void *compress_data;
+    /* per-thread XBZRLE delta decompression state */
+    MultiFDXBZRLEState xbzrle;
     /* Flags for the QIOChannel */
     int read_flags;
 } MultiFDRecvParams;

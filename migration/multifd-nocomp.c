@@ -277,9 +277,117 @@ static void multifd_send_prepare_iovs(MultiFDSendParams *p)
     p->next_packet_size = pages->normal_num * page_size;
 }
 
+/*
+ * XBZRLE encode: encode all normal pages using per-thread cache and
+ * pack the results into data_buf.
+ *
+ * On cache hit: attempt delta encoding via xbzrle_encode_buffer().
+ *   - If encoded output is smaller than a full page: mark as delta
+ *     (bitmap bit = 1) and copy encoded data to data_buf.
+ *   - If encoded output overflows (>= full page): send as full page
+ *     and update cache with the new page content.
+ * On cache miss: send the full page and insert into cache.
+ *
+ * Metadata (bitmap + len[]) is stored temporarily in meta_buf and
+ * written to the packet's extended area later (after multifd_send_fill_packet
+ * zeroes the packet).
+ */
+static void multifd_send_prepare_iovs_xbzrle(MultiFDSendParams *p)
+{
+    MultiFDPages_t *pages = &p->data->u.ram;
+    uint32_t page_size = multifd_ram_page_size();
+    uint32_t page_count = multifd_ram_page_count();
+    uint32_t generation = qatomic_read(&mig_stats.dirty_sync_count);
+    uint32_t bitmap_size = DIV_ROUND_UP(page_count, 8);
+    /* Scratch area: meta_buf bitmaps TARGET_PAGE_SIZE, ample for metadata */
+    uint8_t *bitmap = p->xbzrle.meta_buf;
+    uint32_t *len_arr = (uint32_t *)(bitmap + bitmap_size);
+    uint32_t data_offset = 0;
+
+    memset(bitmap, 0, bitmap_size);
+
+    for (int i = 0; i < pages->normal_num; i++) {
+        uint8_t *page_data = pages->block->host + pages->offset[i];
+        uint64_t cache_addr = pages->block->offset + pages->offset[i];
+
+        if (cache_is_cached(p->xbzrle.cache, cache_addr, generation)) {
+            uint8_t *old_data = get_cached_data(p->xbzrle.cache, cache_addr);
+            int encoded_len = xbzrle_encode_buffer(
+                old_data, page_data, page_size,
+                p->xbzrle.encoded_buf, page_size);
+
+            if (encoded_len >= 0 && (uint32_t)encoded_len < page_size) {
+                /* Delta encoding viable */
+                bitmap[i / 8] |= (1 << (i % 8));
+                len_arr[i] = cpu_to_be32((uint32_t)encoded_len);
+                memcpy(p->xbzrle.data_buf + data_offset,
+                       p->xbzrle.encoded_buf, encoded_len);
+                data_offset += encoded_len;
+                p->xbzrle.cache_hits++;
+            } else {
+                /* Overflow: delta >= full page, send raw */
+                len_arr[i] = cpu_to_be32(page_size);
+                memcpy(p->xbzrle.data_buf + data_offset, page_data, page_size);
+                data_offset += page_size;
+                p->xbzrle.overflows++;
+                cache_insert(p->xbzrle.cache, cache_addr, page_data, generation);
+            }
+        } else {
+            /* Cache miss: first time on this thread */
+            len_arr[i] = cpu_to_be32(page_size);
+            memcpy(p->xbzrle.data_buf + data_offset, page_data, page_size);
+            data_offset += page_size;
+            p->xbzrle.cache_misses++;
+            cache_insert(p->xbzrle.cache, cache_addr, page_data, generation);
+        }
+    }
+
+    p->next_packet_size = data_offset;
+
+    /*
+     * iov[0] is already set to the packet header by
+     * multifd_ram_prepare_header(). Add iov[1] for the
+     * compacted data payload.
+     */
+    if (data_offset > 0) {
+        p->iov[p->iovs_num].iov_base = p->xbzrle.data_buf;
+        p->iov[p->iovs_num].iov_len = data_offset;
+        p->iovs_num++;
+    }
+}
+
+/*
+ * Write the XBZRLE extended metadata (bitmap + len[]) into the packet's
+ * extended header area. Must be called after multifd_send_fill_packet()
+ * because that function zeroes the entire packet buffer including the
+ * extended area.
+ *
+ * Also sets unused32[0] to the total compressed data size so the receiver
+ * knows how many bytes to read for the data payload.
+ */
+static void multifd_send_write_xbzrle_ext(MultiFDSendParams *p)
+{
+    MultiFDPacket_t *packet = p->packet;
+    uint32_t page_count = multifd_ram_page_count();
+    uint32_t bitmap_size = DIV_ROUND_UP(page_count, 8);
+
+    /* Extended area sits right after the offset[] array */
+    uint8_t *bitmap_dst = (uint8_t *)p->packet + sizeof(MultiFDPacket_t)
+                         + sizeof(uint64_t) * page_count;
+    uint32_t *len_dst = (uint32_t *)(bitmap_dst + bitmap_size);
+
+    memcpy(bitmap_dst, p->xbzrle.meta_buf, bitmap_size);
+    memcpy(len_dst, p->xbzrle.meta_buf + bitmap_size,
+           page_count * sizeof(uint32_t));
+
+    packet->unused32[0] = cpu_to_be32(p->next_packet_size);
+}
+
 static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     bool use_zero_copy_send = migrate_zero_copy_send();
+    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache;
+    MultiFDPages_t *pages = &p->data->u.ram;
     int ret;
 
     multifd_send_zero_page_detect(p);
@@ -299,10 +407,23 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
         multifd_ram_prepare_header(p);
     }
 
-    multifd_send_prepare_iovs(p);
-    p->flags |= MULTIFD_FLAG_NOCOMP;
+    if (use_xbzrle && pages->normal_num > 0) {
+        multifd_send_prepare_iovs_xbzrle(p);
+        p->flags |= MULTIFD_FLAG_NOCOMP | MULTIFD_FLAG_XBZRLE;
+    } else {
+        multifd_send_prepare_iovs(p);
+        p->flags |= MULTIFD_FLAG_NOCOMP;
+    }
 
     multifd_send_fill_packet(p);
+
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        /*
+         * fill_packet zeroes the entire packet buffer, so extended
+         * metadata must be written after it.
+         */
+        multifd_send_write_xbzrle_ext(p);
+    }
 
     if (use_zero_copy_send) {
         /* Send header first, without zerocopy */

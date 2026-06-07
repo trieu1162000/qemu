@@ -156,11 +156,32 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         p->iov = g_new0(struct iovec, page_count);
     }
 
+    if (migrate_xbzrle()) {
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        uint64_t cache_size;
+
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
+            g_free(p->iov);
+            p->iov = NULL;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
 static void multifd_nocomp_send_cleanup(MultiFDSendParams *p, Error **errp)
 {
+    multifd_xbzrle_state_free(&p->xbzrle);
     g_free(p->iov);
     p->iov = NULL;
 }
@@ -189,6 +210,8 @@ static void multifd_send_prepare_iovs(MultiFDSendParams *p)
 static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     bool use_zero_copy_send = migrate_zero_copy_send();
+    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache;
+    MultiFDPages_t *pages = &p->data->u.ram;
     int ret;
 
     multifd_send_zero_page_detect(p);
@@ -208,10 +231,26 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
         multifd_ram_prepare_header(p);
     }
 
-    multifd_send_prepare_iovs(p);
-    p->flags |= MULTIFD_FLAG_NOCOMP;
+    if (use_xbzrle && pages->normal_num > 0) {
+        multifd_xbzrle_encode_pages(p);
+        p->flags |= MULTIFD_FLAG_NOCOMP | MULTIFD_FLAG_XBZRLE;
+        p->iov[p->iovs_num].iov_base = p->xbzrle.data_buf;
+        p->iov[p->iovs_num].iov_len = p->next_packet_size;
+        p->iovs_num++;
+    } else {
+        multifd_send_prepare_iovs(p);
+        p->flags |= MULTIFD_FLAG_NOCOMP;
+    }
 
     multifd_send_fill_packet(p);
+
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        /*
+         * fill_packet zeroes the entire packet buffer, so extended
+         * metadata must be written after it.
+         */
+        multifd_xbzrle_write_ext(p);
+    }
 
     if (use_zero_copy_send) {
         /* Send header first, without zerocopy */
@@ -229,12 +268,37 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 
 static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
 {
-    p->iov = g_new0(struct iovec, multifd_ram_page_count());
+    uint32_t page_count = multifd_ram_page_count();
+
+    p->iov = g_new0(struct iovec, page_count);
+
+    if (migrate_xbzrle()) {
+        uint32_t nchannels = migrate_multifd_channels();
+        uint64_t total_cache = migrate_xbzrle_cache_size();
+        uint64_t cache_size;
+
+        /* Mirror the same cache split as the sender. */
+        if (nchannels <= 1) {
+            cache_size = total_cache;
+        } else if (p->id == 0) {
+            cache_size = total_cache / 2;
+        } else {
+            cache_size = (total_cache / 2) / (nchannels - 1);
+        }
+        if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
+                                       page_count, errp)) {
+            g_free(p->iov);
+            p->iov = NULL;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
 static void multifd_nocomp_recv_cleanup(MultiFDRecvParams *p)
 {
+    multifd_xbzrle_state_free(&p->xbzrle);
     g_free(p->iov);
     p->iov = NULL;
 }
@@ -259,6 +323,20 @@ static int multifd_nocomp_recv(MultiFDRecvParams *p, Error **errp)
 
     if (!p->normal_num) {
         return 0;
+    }
+
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        if (!p->xbzrle.cache) {
+            error_setg(errp, "multifd %u: received XBZRLE packet but "
+                       "XBZRLE is not enabled", p->id);
+            return -1;
+        }
+        uint32_t data_size = be32_to_cpu(p->packet->unused32[0]);
+        if (qio_channel_read_all(p->c, p->xbzrle.data_buf,
+                                 data_size, errp) != 0) {
+            return -1;
+        }
+        return multifd_xbzrle_decode_pages(p, errp);
     }
 
     for (int i = 0; i < p->normal_num; i++) {

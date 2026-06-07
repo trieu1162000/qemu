@@ -65,8 +65,8 @@ static bool page_is_hot(RAMBlock *block, unsigned long page_index)
 /*
  * route_page: determine target channel for a page based on hotness.
  *
- * Hot pages -> channel 0 (dedicated hot channel with large XBZRLE cache).
- * Cold pages -> channels 1..N-1 (distributed via GPA hash).
+ * Hot pages: channel 0 (dedicated hot channel with large XBZRLE cache).
+ * Cold pages: channels 1..N-1 (distributed via GPA hash).
  *
  * When XBZRLE is not enabled, all pages are "cold" and distributed
  * across all channels for better load balancing.

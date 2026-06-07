@@ -476,6 +476,101 @@ static void multifd_nocomp_recv_cleanup(MultiFDRecvParams *p)
     p->iov = NULL;
 }
 
+/*
+ * Compute pointers to the XBZRLE extended metadata area
+ * (bitmap + len[]) within a packet buffer.
+ *
+ * The extended area sits right after the offset[] array including:
+ *
+ * [MultiFDPacket_t header]
+ * [offset[page_count]]      : sizeof(uint64_t) * page_count
+ * [xbzrle_bitmap]           : DIV_ROUND_UP(page_count, 8)
+ * [xbzrle_len[page_count]]  : page_count * sizeof(uint32_t)
+ */
+static void multifd_get_xbzrle_ext(const MultiFDPacket_t *packet,
+                                   uint32_t page_count,
+                                   const uint8_t **bitmap,
+                                   const uint32_t **len_arr)
+{
+    const uint8_t *ext = (const uint8_t *)packet + sizeof(MultiFDPacket_t)
+                         + sizeof(uint64_t) * page_count;
+    *bitmap = ext;
+    *len_arr = (const uint32_t *)(ext + DIV_ROUND_UP(page_count, 8));
+}
+
+/*
+ * Decode a batch of XBZRLE-compressed pages received from the sender.
+ *
+ * Wire format for each page:
+ *   bitmap bit = 1: delta-encoded: decode via xbzrle_decode_buffer
+ *   bitmap bit = 0: full page: memcpy directly to guest RAM
+ *
+ * Cache consistency:
+ *   - Full pages: cache_insert (matches sender's miss/overflow path)
+ *   - Delta pages: no cache_insert (matches sender's hit path where
+ *     only it_age is refreshed, not the content). The old base stays
+ *     for the next round's delta.
+ */
+static int multifd_recv_xbzrle(MultiFDRecvParams *p, Error **errp)
+{
+    uint32_t page_size = multifd_ram_page_size();
+    uint32_t page_count = multifd_ram_page_count();
+    uint32_t generation = qatomic_read(&mig_stats.dirty_sync_count);
+    uint32_t data_size = be32_to_cpu(p->packet->unused32[0]);
+    const uint8_t *bitmap;
+    const uint32_t *len_arr;
+    int ret;
+
+    multifd_get_xbzrle_ext(p->packet, page_count, &bitmap, &len_arr);
+
+    /* Read the compacted (possibly delta-encoded) data payload */
+    ret = qio_channel_read_all(p->c, p->xbzrle.data_buf, data_size, errp);
+    if (ret != 0) {
+        return ret;
+    }
+
+    uint32_t data_offset = 0;
+    for (int i = 0; i < p->normal_num; i++) {
+        uint8_t *dst = p->host + p->normal[i];
+        uint64_t cache_addr = p->block->offset + p->normal[i];
+        uint32_t page_len = be32_to_cpu(len_arr[i]);
+
+        if (bitmap[i / 8] & (1 << (i % 8))) {
+            /* Delta-encoded page */
+            if (!cache_is_cached(p->xbzrle.cache, cache_addr, generation)) {
+                error_setg(errp,
+                           "multifd %u: xbzrle cache miss for delta page %d",
+                           p->id, i);
+                return -1;
+            }
+            uint8_t *old_data = get_cached_data(p->xbzrle.cache, cache_addr);
+            memcpy(dst, old_data, page_size);
+            int decoded = xbzrle_decode_buffer(
+                p->xbzrle.data_buf + data_offset, page_len,
+                dst, page_size);
+            if (decoded < 0) {
+                error_setg(errp,
+                           "multifd %u: xbzrle decode failed for page %d",
+                           p->id, i);
+                return -1;
+            }
+            /*
+             * Don't cache_insert here — the old base entry stays in
+             * cache (age refreshed by cache_is_cached), mirroring the
+             * sender's behaviour on a delta hit.
+             */
+        } else {
+            /* Full page (cache miss or overflow on sender) */
+            memcpy(dst, p->xbzrle.data_buf + data_offset, page_size);
+            cache_insert(p->xbzrle.cache, cache_addr, dst, generation);
+        }
+        data_offset += page_len;
+        ramblock_recv_bitmap_set_offset(p->block, p->normal[i]);
+    }
+
+    return 0;
+}
+
 static int multifd_nocomp_recv(MultiFDRecvParams *p, Error **errp)
 {
     uint32_t flags;
@@ -496,6 +591,15 @@ static int multifd_nocomp_recv(MultiFDRecvParams *p, Error **errp)
 
     if (!p->normal_num) {
         return 0;
+    }
+
+    if (p->flags & MULTIFD_FLAG_XBZRLE) {
+        if (!p->xbzrle.cache) {
+            error_setg(errp, "multifd %u: received XBZRLE packet but "
+                       "XBZRLE is not enabled", p->id);
+            return -1;
+        }
+        return multifd_recv_xbzrle(p, errp);
     }
 
     for (int i = 0; i < p->normal_num; i++) {

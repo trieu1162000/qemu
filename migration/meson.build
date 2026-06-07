@@ -27,6 +27,7 @@ system_ss.add(files(
   'multifd.c',
   'multifd-device-state.c',
   'multifd-nocomp.c',
+  'multifd-xbzrle.c',
   'multifd-zlib.c',
   'multifd-zero-page.c',
   'options.c',

@@ -453,4 +453,21 @@ void multifd_device_state_send_cleanup(void);
 
 void multifd_device_state_send_prepare(MultiFDSendParams *p);
 
+/*
+ * XBZRLE shared helpers: usable from any compression ops table
+ * (nocomp, zlib, zstd, etc.).
+ */
+int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
+                               uint64_t cache_size,
+                               uint32_t page_count,
+                               Error **errp);
+void multifd_xbzrle_state_free(MultiFDXBZRLEState *s);
+void multifd_xbzrle_encode_pages(MultiFDSendParams *p);
+int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp);
+void multifd_xbzrle_ext_write(MultiFDSendParams *p);
+void multifd_xbzrle_ext_read(const MultiFDPacket_t *packet,
+                             uint32_t page_count,
+                             const uint8_t **bitmap,
+                             const uint32_t **len_arr);
+
 #endif

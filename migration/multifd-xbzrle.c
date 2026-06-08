@@ -161,11 +161,12 @@ int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)
                 return -1;
             }
             /*
-             * Don't cache_insert — the old base entry stays in cache,
-             * mirroring the sender's delta-hit behavior.
+             * We don't cache_insert here since the old base entry stays in
+             * cache (age refreshed by cache_is_cached), mirroring the
+             * sender's behaviour on a delta hit.
              */
         } else {
-            /* Full page */
+            /* Full page: Cache miss or overflow on sender */
             memcpy(dst, p->xbzrle.data_buf + data_offset, page_size);
             cache_insert(p->xbzrle.cache, cache_addr, dst, generation);
         }

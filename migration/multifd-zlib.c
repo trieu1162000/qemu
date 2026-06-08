@@ -207,7 +207,7 @@ out:
     }
     multifd_send_fill_packet(p);
     if (p->flags & MULTIFD_FLAG_XBZRLE) {
-        multifd_xbzrle_write_ext(p);
+        multifd_xbzrle_ext_write(p);
     }
     return 0;
 }

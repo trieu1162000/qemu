@@ -15,6 +15,7 @@
 
 #include "exec/target_page.h"
 #include "ram.h"
+#include "page_cache.h"
 
 typedef struct MultiFDRecvData MultiFDRecvData;
 typedef struct MultiFDSendData MultiFDSendData;
@@ -28,17 +29,16 @@ typedef struct MultiFDSendData MultiFDSendData;
  * The cache maps page addresses to their previously-sent content.
  * When a dirty page hits in the cache, only the XOR delta (encoded
  * with run-length encoding) is sent instead of the full page.
- *
- * cache, encoded_buf, and current_buf are NULL when XBZRLE is not
- * enabled for multifd (migrate_xbzrle() returns false).
  */
 typedef struct MultiFDXBZRLEState {
     /* Per-thread page history: addr -> previous page content */
     PageCache  *cache;
     /* Scratch buffer for the XOR-RLE encoded output (TARGET_PAGE_SIZE) */
     uint8_t    *encoded_buf;
-    /* Scratch buffer for a copy of the current page (TARGET_PAGE_SIZE) */
-    uint8_t    *current_buf;
+    /* Scratch buffer for per-packet metadata (bitmap + len[]) */
+    uint8_t    *meta_buf;
+    /* Buffer for compacted per-page payload (page_count * TARGET_PAGE_SIZE) */
+    uint8_t    *data_buf;
     /* Statistics */
     uint64_t    cache_hits;
     uint64_t    cache_misses;

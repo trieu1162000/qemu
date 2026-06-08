@@ -249,7 +249,7 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
          * fill_packet zeroes the entire packet buffer, so extended
          * metadata must be written after it.
          */
-        multifd_xbzrle_write_ext(p);
+        multifd_xbzrle_ext_write(p);
     }
 
     if (use_zero_copy_send) {

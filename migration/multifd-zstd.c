@@ -151,7 +151,7 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
                        p->id, ZSTD_getErrorName(ret));
             return -1;
         }
-        goto fill_iov:
+        goto fill_iov;
     }
 
     z->out.dst = z->zbuff;
@@ -204,7 +204,7 @@ out:
     }
     multifd_send_fill_packet(p);
     if (p->flags & MULTIFD_FLAG_XBZRLE) {
-        multifd_xbzrle_write_ext(p);
+        multifd_xbzrle_ext_write(p);
     }
     return 0;
 }

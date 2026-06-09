@@ -115,7 +115,9 @@ void multifd_send_data_clear(MultiFDSendData *data)
         multifd_send_data_clear_device_state(&data->u.device_state);
         break;
     default:
-        /* Nothing to do */
+        data->u.ram.num = 0;
+        data->u.ram.normal_num = 0;
+        data->u.ram.block = NULL;
         break;
     }
 

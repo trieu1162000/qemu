@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "exec/target_page.h"
 #include "system/ramblock.h"
 #include "qapi/error.h"
@@ -23,7 +24,16 @@ int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
                                uint32_t page_count,
                                Error **errp)
 {
-    s->cache = cache_init(cache_size, TARGET_PAGE_SIZE, errp);
+    size_t num_pages = cache_size / TARGET_PAGE_SIZE;
+
+    if (num_pages == 0) {
+        error_setg(errp, "multifd xbzrle: cache too small");
+        return -1;
+    }
+    /* cache_init requires num_pages to be a power of two */
+    num_pages = pow2floor(num_pages);
+    s->cache = cache_init((uint64_t)num_pages * TARGET_PAGE_SIZE,
+                          TARGET_PAGE_SIZE, errp);
     if (!s->cache) {
         return -1;
     }

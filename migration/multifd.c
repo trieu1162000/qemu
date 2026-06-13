@@ -442,14 +442,15 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
      * This prevents the main thread from stalling while other channels are
      * ready to accept work.  For the common case (non-XBZRLE) there is almost
      * always an idle channel, so the main thread never blocks which matching
-     * round-robin dispatch throughput.  For XBZRLE, a page that misses its
-     * preferred channel loses cache locality only for that one dispatch, which
-     * is negligible under normal load.
+     * round-robin dispatch throughput.
      *
-     * The data still reaches the destination correctly regardless of which
-     * channel carries it.
+     * When XBZRLE is enabled, redirect is unsafe: each channel's XBZRLE cache
+     * is per-thread on both sender and receiver.  Redirecting a page to a
+     * different thread breaks cache coherence — the sender might delta-encode
+     * against a base page that the receiver's cache doesn't have, causing
+     * "xbzrle cache miss for delta page" on the destination.
      */
-    if (qatomic_read(&p->pending_job)) {
+    if (!migrate_xbzrle() && qatomic_read(&p->pending_job)) {
         int n = migrate_multifd_channels();
         for (int i = 1; i < n; i++) {
             int try_ch = (ch + i) % n;

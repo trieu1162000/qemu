@@ -33,6 +33,8 @@ struct zlib_data {
 };
 
 /* Multifd zlib compression */
+static void multifd_zlib_send_cleanup(MultiFDSendParams *p, Error **errp);
+static void multifd_zlib_recv_cleanup(MultiFDRecvParams *p);
 
 static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
 {
@@ -61,6 +63,9 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
     }
     p->compress_data = z;
 
+    /* Needs 2 IOVs, one for packet header and one for compressed data */
+    p->iov = g_new0(struct iovec, 2);
+
     if (migrate_xbzrle()) {
         uint32_t page_count = multifd_ram_page_count();
         uint32_t nchannels = migrate_multifd_channels();
@@ -76,13 +81,10 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
-            g_free(p->iov);
+            multifd_zlib_send_cleanup(p, NULL);
             return -1;
         }
     }
-
-    /* Needs 2 IOVs, one for packet header and one for compressed data */
-    p->iov = g_new0(struct iovec, 2);
 
     return 0;
 
@@ -217,7 +219,6 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
     struct zlib_data *z = g_new0(struct zlib_data, 1);
     z_stream *zs = &z->zs;
 
-    p->compress_data = z;
     zs->zalloc = Z_NULL;
     zs->zfree = Z_NULL;
     zs->opaque = Z_NULL;
@@ -225,6 +226,7 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
     zs->next_in = Z_NULL;
     if (inflateInit(zs) != Z_OK) {
         error_setg(errp, "multifd %u: inflate init failed", p->id);
+        g_free(z);
         return -1;
     }
     /* To be safe, we reserve twice the size of the packet */
@@ -233,8 +235,11 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
     if (!z->zbuff) {
         inflateEnd(zs);
         error_setg(errp, "multifd %u: out of memory for zbuff", p->id);
+        g_free(z);
         return -1;
     }
+
+    p->compress_data = z;
 
     if (migrate_xbzrle()) {
         uint32_t page_count = multifd_ram_page_count();
@@ -251,8 +256,7 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
-            g_free(z->zbuff);
-            inflateEnd(zs);
+            multifd_zlib_recv_cleanup(p);
             return -1;
         }
     }

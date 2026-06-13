@@ -68,6 +68,9 @@ static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
     }
     p->compress_data = z;
 
+    /* Needs 2 IOVs, one for packet header and one for compressed data */
+    p->iov = g_new0(struct iovec, 2);
+
     if (migrate_xbzrle()) {
         uint32_t page_count = multifd_ram_page_count();
         uint32_t nchannels = migrate_multifd_channels();
@@ -83,15 +86,11 @@ static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
-            ZSTD_freeCStream(z->zcs);
-            g_free(z->zbuff);
-            g_free(z);
+            multifd_zstd_send_cleanup(p, NULL);
             return -1;
         }
     }
 
-    /* Needs 2 IOVs, one for packet header and one for compressed data */
-    p->iov = g_new0(struct iovec, 2);
     return 0;
 }
 
@@ -214,7 +213,6 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
     struct zstd_data *z = g_new0(struct zstd_data, 1);
     int ret;
 
-    p->compress_data = z;
     z->zds = ZSTD_createDStream();
     if (!z->zds) {
         g_free(z);
@@ -241,6 +239,8 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
         return -1;
     }
 
+    p->compress_data = z;
+
     if (migrate_xbzrle()) {
         uint32_t page_count = multifd_ram_page_count();
         uint32_t nchannels = migrate_multifd_channels();
@@ -256,9 +256,7 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
-            g_free(z->zbuff);
-            ZSTD_freeDStream(z->zds);
-            g_free(z);
+            multifd_zstd_recv_cleanup(p);
             return -1;
         }
     }

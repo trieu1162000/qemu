@@ -436,8 +436,37 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
         return false;
     }
 
-    /* Wait for this specific channel to finish any previous job.
+    /*
+     * If the preferred channel is busy, try to find any idle channel.
      *
+     * This prevents the main thread from stalling while other channels are
+     * ready to accept work.  For the common case (non-XBZRLE) there is almost
+     * always an idle channel, so the main thread never blocks which matching
+     * round-robin dispatch throughput.  For XBZRLE, a page that misses its
+     * preferred channel loses cache locality only for that one dispatch, which
+     * is negligible under normal load.
+     *
+     * The data still reaches the destination correctly regardless of which
+     * channel carries it.
+     */
+    if (qatomic_read(&p->pending_job)) {
+        int n = migrate_multifd_channels();
+        for (int i = 1; i < n; i++) {
+            int try_ch = (ch + i) % n;
+            if (!qatomic_read(
+                    &multifd_send_state->params[try_ch].pending_job)) {
+                ch = try_ch;
+                p = &multifd_send_state->params[ch];
+                goto dispatch;
+            }
+        }
+    }
+
+    /*
+     * All channels busy: wait for the preferred one to finish.
+     */
+
+    /*
      * We wait on the shared channels_ready semaphore. This semaphore is
      * posted by any channel thread when it finishes a job or sync.
      * When we wake up, we re-check pending_job. If it's still true,
@@ -460,6 +489,7 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
         qemu_sem_wait(&multifd_send_state->channels_ready);
     }
 
+dispatch:
     /* Channel should have cleared its data after processing */
     assert(multifd_payload_empty(p->data));
 

@@ -42,7 +42,16 @@ static uint32_t gpa_hash(ram_addr_t addr, uint32_t n)
     if (n <= 1) {
         return 0;
     }
-    return (uint32_t)((addr * KNUTH_MULTIPLICATIVE) % n);
+    /*
+     * Shift out the page-offset bits first.  addr is a byte offset into
+     * a RAMBlock, so consecutive pages are at multiples of PAGE_SIZE.
+     * Hashing the raw byte offset with a multiplicative hash collapses
+     * to zero for any power-of-two n (the low log2(n) bits of the
+     * product are always zero because addr has log2(PAGE_SIZE) trailing
+     * zero bits).  Shifting first gives sequential integers 0,1,2,...
+     * which the Knuth multiply distributes correctly across n buckets.
+     */
+    return (uint32_t)(((addr >> TARGET_PAGE_BITS) * KNUTH_MULTIPLICATIVE) % n);
 }
 
 /*

@@ -86,24 +86,8 @@ static int route_page(RAMBlock *block, ram_addr_t offset)
         return 0;
     }
 
-    if (!page_is_hot(block, offset >> TARGET_PAGE_BITS)) {
-        /* Cold: distribute across cold pool */
-        uint32_t cold_start = 0;
-        uint32_t n_cold = nchannels;
-
-        if (migrate_xbzrle()) {
-            cold_start = 1;
-            n_cold = nchannels - 1;
-        }
-
-        if (n_cold <= 1) {
-            return (int)cold_start;
-        }
-        return (int)(cold_start + gpa_hash(offset, n_cold));
-    }
-
-    /* Hot page -> dedicated hot channel */
-    return 0;
+    /* Distribute across all channels equally */
+    return (int)gpa_hash(offset, nchannels);
 }
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)

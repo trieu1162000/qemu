@@ -133,6 +133,12 @@ void multifd_xbzrle_encode_pages(MultiFDSendParams *p)
     }
 
     p->next_packet_size = data_offset;
+
+    trace_multifd_xbzrle_encode(p->id ? p->id : 0,
+                                p->xbzrle.cache_hits,
+                                p->xbzrle.cache_misses,
+                                p->xbzrle.overflows,
+                                pages->normal_num);
 }
 
 int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)
@@ -154,11 +160,13 @@ int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)
         if (bitmap[i / 8] & (1 << (i % 8))) {
             /* Delta-encoded page */
             if (!cache_is_cached(p->xbzrle.cache, cache_addr, generation)) {
+                trace_multifd_xbzrle_decode_cache_miss(p->id, i);
                 error_setg(errp,
                            "multifd %u: xbzrle cache miss for delta page %d",
                            p->id, i);
                 return -1;
             }
+            trace_multifd_xbzrle_decode_delta(p->id, i);
             uint8_t *old_data = get_cached_data(p->xbzrle.cache, cache_addr);
             memcpy(dst, old_data, page_size);
             int decoded = xbzrle_decode_buffer(

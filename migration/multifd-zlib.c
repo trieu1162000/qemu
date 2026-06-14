@@ -132,6 +132,7 @@ static int multifd_zlib_send_prepare(MultiFDSendParams *p, Error **errp)
     }
 
     if (use_xbzrle && pages->normal_num > 0) {
+        trace_multifd_ram_xbzrle_use(p->id, p->data->redirected);
         /*
          * XBZRLE-encode first, then deflate the compacted blob.
          * This gives double compression: delta + zlib.

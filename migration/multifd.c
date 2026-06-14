@@ -460,6 +460,7 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
                  * skips XBZRLE encoding, preserving cache coherence.
                  */
                 (*send_data)->redirected = true;
+                trace_multifd_send_channel_redirect(ch, try_ch);
                 goto dispatch;
             }
         }

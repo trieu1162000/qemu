@@ -70,13 +70,15 @@ static bool page_is_hot(RAMBlock *block, unsigned long page_index)
 }
 
 /*
- * route_page: determine target channel for a page based on hotness.
+ * route_page: distribute pages across channels via GPA hash.
  *
- * Hot pages: channel 0 (dedicated hot channel with large XBZRLE cache).
- * Cold pages: channels 1..N-1 (distributed via GPA hash).
+ * All pages are distributed equally across all channels regardless of
+ * hotness.  This provides optimal load balancing for all-hot workloads
+ * where the hot-page routing would overload the dedicated hot channel.
  *
- * When XBZRLE is not enabled, all pages are "cold" and distributed
- * across all channels for better load balancing.
+ * (Hot-page isolation is deferred — a future adaptive scheme can
+ * detect genuine hot/cold splits and re-activate dedicated routing
+ * when XBZRLE cache hit rates justify it.)
  */
 static int route_page(RAMBlock *block, ram_addr_t offset)
 {
@@ -86,7 +88,6 @@ static int route_page(RAMBlock *block, ram_addr_t offset)
         return 0;
     }
 
-    /* Distribute across all channels equally */
     return (int)gpa_hash(offset, nchannels);
 }
 
@@ -226,12 +227,14 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
     }
 
     if (use_xbzrle && pages->normal_num > 0) {
+        trace_multifd_ram_xbzrle_use(p->id, p->data->redirected);
         multifd_xbzrle_encode_pages(p);
         p->flags |= MULTIFD_FLAG_NOCOMP | MULTIFD_FLAG_XBZRLE;
         p->iov[p->iovs_num].iov_base = p->xbzrle.data_buf;
         p->iov[p->iovs_num].iov_len = p->next_packet_size;
         p->iovs_num++;
     } else {
+        trace_multifd_ram_xbzrle_skip(p->id);
         multifd_send_prepare_iovs(p);
         p->flags |= MULTIFD_FLAG_NOCOMP;
     }

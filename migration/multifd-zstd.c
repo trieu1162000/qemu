@@ -116,7 +116,8 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     MultiFDPages_t *pages = &p->data->u.ram;
     struct zstd_data *z = p->compress_data;
-    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache;
+    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache &&
+                      !p->data->redirected;
     int ret;
     uint32_t i;
 

@@ -33,6 +33,8 @@ struct zlib_data {
 };
 
 /* Multifd zlib compression */
+static void multifd_zlib_send_cleanup(MultiFDSendParams *p, Error **errp);
+static void multifd_zlib_recv_cleanup(MultiFDRecvParams *p);
 
 static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
 {

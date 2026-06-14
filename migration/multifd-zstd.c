@@ -36,6 +36,8 @@ struct zstd_data {
 };
 
 /* Multifd zstd compression */
+static void multifd_zstd_send_cleanup(MultiFDSendParams *p, Error **errp);
+static void multifd_zstd_recv_cleanup(MultiFDRecvParams *p);
 
 static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
 {

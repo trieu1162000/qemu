@@ -136,7 +136,8 @@ multifd_new_send_channel_async(uint8_t id) "channel %u"
 multifd_new_send_channel_async_error(uint8_t id, void *err) "channel=%u err=%p"
 multifd_recv_unfill(uint8_t id, uint64_t packet_num, uint32_t flags, uint32_t next_packet_size) "channel %u packet_num %" PRIu64 " flags 0x%x next packet size %u"
 multifd_recv_new_channel(uint8_t id) "channel %u"
-multifd_recv_sync_main(long packet_num) "packet num %ld"
+multifd_recv_sync_main(long packet_num, uint64_t generation) "packet num %ld generation %" PRIu64
+multifd_send_sync_main_gen(uint64_t generation) "generation %" PRIu64
 multifd_recv_sync_main_signal(uint8_t id) "channel %u"
 multifd_recv_sync_main_wait(uint8_t id) "iter %u"
 multifd_recv_terminate_threads(bool error) "error %d"

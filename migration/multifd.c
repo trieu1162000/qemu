@@ -752,6 +752,7 @@ int multifd_send_sync_main(MultiFDSyncReq req)
         }
     }
     trace_multifd_send_sync_main(multifd_send_state->packet_num);
+    trace_multifd_send_sync_main_gen(qatomic_read(&mig_stats.dirty_sync_count));
 
     return 0;
 }
@@ -1321,6 +1322,22 @@ void multifd_recv_sync_main(void)
     }
 
     /*
+     * Advance the XBZRLE cache generation to match the sender.
+     *
+     * dirty_sync_count is incremented on the sender at each migration
+     * iteration but never on the receiver. Without this bump, the
+     * receiver's XBZRLE cache always uses generation 1, causing
+     * cache_insert to never evict stale entries (it_age + 2 > 1 is
+     * always true when it_age >= 1). Meanwhile the sender's cache
+     * evolves as generations advance. Eventually the sender encodes a
+     * delta against a page the receiver no longer has -> cache miss.
+     *
+     * All channel threads have finished decoding by this point
+     * (we waited for sem_sync above), so the generation bump is safe.
+     */
+    qatomic_add(&mig_stats.dirty_sync_count, 1);
+
+    /*
      * Sync done. Release the channels for the next iteration.
      */
     for (i = 0; i < thread_count; i++) {
@@ -1334,7 +1351,8 @@ void multifd_recv_sync_main(void)
         trace_multifd_recv_sync_main_signal(p->id);
         qemu_sem_post(&p->sem_sync);
     }
-    trace_multifd_recv_sync_main(multifd_recv_state->packet_num);
+    trace_multifd_recv_sync_main(multifd_recv_state->packet_num,
+                                  qatomic_read(&mig_stats.dirty_sync_count));
 }
 
 static int multifd_device_state_recv(MultiFDRecvParams *p, Error **errp)

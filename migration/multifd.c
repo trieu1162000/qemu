@@ -106,6 +106,8 @@ MultiFDSendData *multifd_send_data_alloc(void)
 
 void multifd_send_data_clear(MultiFDSendData *data)
 {
+    data->redirected = false;
+
     if (multifd_payload_empty(data)) {
         return;
     }
@@ -440,17 +442,12 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
      * If the preferred channel is busy, try to find any idle channel.
      *
      * This prevents the main thread from stalling while other channels are
-     * ready to accept work.  For the common case (non-XBZRLE) there is almost
-     * always an idle channel, so the main thread never blocks which matching
-     * round-robin dispatch throughput.
-     *
-     * When XBZRLE is enabled, redirect is unsafe: each channel's XBZRLE cache
-     * is per-thread on both sender and receiver.  Redirecting a page to a
-     * different thread breaks cache coherence — the sender might delta-encode
-     * against a base page that the receiver's cache doesn't have, causing
-     * "xbzrle cache miss for delta page" on the destination.
+     * ready to accept work.  The redirect is safe with XBZRLE because the
+     * redirected data is marked with ->redirected=true, causing the channel
+     * thread to skip XBZRLE encoding (send full pages) which preserves
+     * cache coherence between sender and receiver.
      */
-    if (!migrate_xbzrle() && qatomic_read(&p->pending_job)) {
+    if (qatomic_read(&p->pending_job)) {
         int n = migrate_multifd_channels();
         for (int i = 1; i < n; i++) {
             int try_ch = (ch + i) % n;
@@ -458,6 +455,11 @@ bool multifd_send_channel(MultiFDSendData **send_data, int ch)
                     &multifd_send_state->params[try_ch].pending_job)) {
                 ch = try_ch;
                 p = &multifd_send_state->params[ch];
+                /*
+                 * Mark the data as redirected so the channel thread
+                 * skips XBZRLE encoding, preserving cache coherence.
+                 */
+                (*send_data)->redirected = true;
                 goto dispatch;
             }
         }

@@ -186,6 +186,12 @@ typedef struct MultiFDPayload {
 
 struct MultiFDSendData {
     MultiFDPayloadType type;
+    /*
+     * Set when these pages were redirected to a non-preferred channel.
+     * When true, the channel thread should skip XBZRLE encoding (send
+     * full pages) to avoid cache incoherence between sender and receiver.
+     */
+    bool redirected;
     MultiFDPayload u;
 };
 

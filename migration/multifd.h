@@ -44,7 +44,22 @@ typedef struct MultiFDXBZRLEState {
     uint64_t    cache_misses;
     /* Pages where encoded delta was larger than full page; sent as full */
     uint64_t    overflows;
+    uint32_t    num_cache_entries;
+    /*
+     * Sender's dirty_sync_count when this packet was encoded.
+     * Written into packet->unused64[0] by ext_write on the sender,
+     * read by multifd_xbzrle_decode_pages on the receiver so both
+     * sides use the identical generation for cache aging decisions.
+     */
+    uint32_t    generation;
 } MultiFDXBZRLEState;
+
+/* Minimum cache entries for XBZRLE to be worthwhile.
+ * Below this threshold the channel falls back to nocomp to avoid
+ * the per-page overhead (cache_is_cached + cache_insert + memcpy)
+ * that provides zero benefit with a thrashing cache.
+ * 2048 entries ≈ 16 multifd packets (at 4K/page × 128 pages/packet). */
+#define XBZRLE_MIN_CACHE_ENTRIES 2048
 
 typedef enum {
     /* No sync request */

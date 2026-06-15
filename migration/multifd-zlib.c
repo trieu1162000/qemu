@@ -120,7 +120,9 @@ static int multifd_zlib_send_prepare(MultiFDSendParams *p, Error **errp)
     z_stream *zs = &z->zs;
     uint32_t out_size = 0;
     uint32_t page_size = multifd_ram_page_size();
-    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache;
+    bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache &&
+                      !p->data->redirected &&
+                      p->xbzrle.num_cache_entries >= XBZRLE_MIN_CACHE_ENTRIES;
     int ret;
     uint32_t i;
 

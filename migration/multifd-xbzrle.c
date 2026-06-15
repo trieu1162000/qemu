@@ -89,6 +89,7 @@ void multifd_xbzrle_encode_pages(MultiFDSendParams *p)
     uint32_t page_size = multifd_ram_page_size();
     uint32_t page_count = multifd_ram_page_count();
     uint32_t generation = qatomic_read(&mig_stats.dirty_sync_count);
+    p->xbzrle.generation = generation;
     uint32_t bitmap_size = DIV_ROUND_UP(page_count, 8);
     uint8_t *bitmap = p->xbzrle.meta_buf;
     uint32_t *len_arr = (uint32_t *)(bitmap + bitmap_size);
@@ -145,7 +146,15 @@ int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)
 {
     uint32_t page_size = multifd_ram_page_size();
     uint32_t page_count = multifd_ram_page_count();
-    uint32_t generation = qatomic_read(&mig_stats.dirty_sync_count);
+    /*
+     * Use the sender's generation from the packet, not our local
+     * dirty_sync_count.  The sender's counter advances per iteration;
+     * our local counter is bumped per multifd sync, which can diverge
+     * when multiple syncs happen within a single sender iteration.
+     * Using the exact value from the encoding side guarantees that
+     * cache eviction decisions are identical on both sides.
+     */
+    uint32_t generation = be64_to_cpu(p->packet->unused64[0]);
     const uint8_t *bitmap;
     const uint32_t *len_arr;
     uint32_t data_offset = 0;
@@ -214,6 +223,14 @@ void multifd_xbzrle_ext_write(MultiFDSendParams *p)
            page_count * sizeof(uint32_t));
 
     packet->unused32[0] = cpu_to_be32(p->next_packet_size);
+    /*
+     * Pass the sender's dirty_sync_count to the receiver so both
+     * sides use the identical generation for cache aging/eviction
+     * decisions.  Without this, the receiver's local counter can
+     * diverge (bumped per multifd sync vs per-iteration), causing
+     * the receiver to evict entries the sender still considers fresh.
+     */
+    packet->unused64[0] = cpu_to_be64(p->xbzrle.generation);
 }
 
 void multifd_xbzrle_ext_read(const MultiFDPacket_t *packet,

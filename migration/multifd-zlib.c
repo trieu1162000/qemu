@@ -74,10 +74,8 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
 
         if (nchannels <= 1) {
             cache_size = total_cache;
-        } else if (p->id == 0) {
-            cache_size = total_cache / 2;
         } else {
-            cache_size = (total_cache / 2) / (nchannels - 1);
+            cache_size = total_cache / nchannels;
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
@@ -252,10 +250,8 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
 
         if (nchannels <= 1) {
             cache_size = total_cache;
-        } else if (p->id == 0) {
-            cache_size = total_cache / 2;
         } else {
-            cache_size = (total_cache / 2) / (nchannels - 1);
+            cache_size = total_cache / nchannels;
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {

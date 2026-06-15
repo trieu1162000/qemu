@@ -27,15 +27,13 @@
 
 /* Knuth multiplicative hash */
 #define KNUTH_MULTIPLICATIVE 2654435761ULL
-/* Hot-page routing threshold */
-#define XBZRLE_HOT_THRESHOLD 2
 
 static MultiFDSendData **channel_send;
 static int num_channels;
 
 /*
  * Maps a page address to one of n buckets deterministically.
- * Used to distribute cold pages across the cold channel pool.
+ * Used to distribute pages across channels.
  */
 static uint32_t gpa_hash(ram_addr_t addr, uint32_t n)
 {
@@ -55,26 +53,11 @@ static uint32_t gpa_hash(ram_addr_t addr, uint32_t n)
 }
 
 /*
- * page_is_hot: check if a page is "hot" based on its 2-bit counter.
- *
- * A page is hot when its saturating counter (updated at bitmap_sync)
- * is >= XBZRLE_HOT_THRESHOLD (default 2). Returns false when XBZRLE
- * is not enabled (counters will be NULL).
- */
-static bool page_is_hot(RAMBlock *block, unsigned long page_index)
-{
-    if (!migrate_xbzrle() || !block->hotness_counters) {
-        return false;
-    }
-    return block->hotness_counters[page_index] >= XBZRLE_HOT_THRESHOLD;
-}
-
-/*
  * route_page: distribute pages across channels via GPA hash.
  *
  * All pages are distributed equally across all channels regardless of
  * hotness.  This provides optimal load balancing for all-hot workloads
- * where the hot-page routing would overload the dedicated hot channel.
+ * where hot-page routing would overload a single channel.
  *
  * (Hot-page isolation is deferred — a future adaptive scheme can
  * detect genuine hot/cold splits and re-activate dedicated routing
@@ -88,24 +71,7 @@ static int route_page(RAMBlock *block, ram_addr_t offset)
         return 0;
     }
 
-    if (!page_is_hot(block, offset >> TARGET_PAGE_BITS)) {
-        /* Cold: distribute across cold pool */
-        uint32_t cold_start = 0;
-        uint32_t n_cold = nchannels;
-
-        if (migrate_xbzrle()) {
-            cold_start = 1;
-            n_cold = nchannels - 1;
-        }
-
-        if (n_cold <= 1) {
-            return (int)cold_start;
-        }
-        return (int)(cold_start + gpa_hash(offset, n_cold));
-    }
-
-    /* Hot page -> dedicated hot channel */
-    return 0;
+    return (int)gpa_hash(offset, nchannels);
 }
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)
@@ -172,12 +138,11 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         uint64_t total_cache = migrate_xbzrle_cache_size();
         uint64_t cache_size;
 
+        /* Distribute cache equally across all channels */
         if (nchannels <= 1) {
             cache_size = total_cache;
-        } else if (p->id == 0) {
-            cache_size = total_cache / 2;
         } else {
-            cache_size = (total_cache / 2) / (nchannels - 1);
+            cache_size = total_cache / nchannels;
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
@@ -292,13 +257,11 @@ static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
         uint64_t total_cache = migrate_xbzrle_cache_size();
         uint64_t cache_size;
 
-        /* Mirror the same cache split as the sender. */
+        /* Mirror the same equal distribution as the sender. */
         if (nchannels <= 1) {
             cache_size = total_cache;
-        } else if (p->id == 0) {
-            cache_size = total_cache / 2;
         } else {
-            cache_size = (total_cache / 2) / (nchannels - 1);
+            cache_size = total_cache / nchannels;
         }
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {

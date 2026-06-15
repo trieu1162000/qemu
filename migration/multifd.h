@@ -58,8 +58,8 @@ typedef struct MultiFDXBZRLEState {
  * Below this threshold the channel falls back to nocomp to avoid
  * the per-page overhead (cache_is_cached + cache_insert + memcpy)
  * that provides zero benefit with a thrashing cache.
- * 2048 entries ≈ 16 multifd packets (at 4K/page × 128 pages/packet). */
-#define XBZRLE_MIN_CACHE_ENTRIES 2048
+ * 4096 entries ≈ 32 multifd packets (at 4K/page × 128 pages/packet). */
+#define XBZRLE_MIN_CACHE_ENTRIES 4096
 
 typedef enum {
     /* No sync request */

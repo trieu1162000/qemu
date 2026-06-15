@@ -32,6 +32,7 @@ int multifd_xbzrle_state_alloc(MultiFDXBZRLEState *s,
     }
     /* cache_init requires num_pages to be a power of two */
     num_pages = pow2floor(num_pages);
+    s->num_cache_entries = (uint32_t)num_pages;
     s->cache = cache_init((uint64_t)num_pages * TARGET_PAGE_SIZE,
                           TARGET_PAGE_SIZE, errp);
     if (!s->cache) {

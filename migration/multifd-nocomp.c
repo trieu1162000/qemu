@@ -222,7 +222,8 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     bool use_zero_copy_send = migrate_zero_copy_send();
     bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache &&
-                      !p->data->redirected;
+                      !p->data->redirected &&
+                      p->xbzrle.num_cache_entries >= XBZRLE_MIN_CACHE_ENTRIES;
     MultiFDPages_t *pages = &p->data->u.ram;
     int ret;
 

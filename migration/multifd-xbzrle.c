@@ -161,6 +161,11 @@ int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)
             /* Delta-encoded page */
             if (!cache_is_cached(p->xbzrle.cache, cache_addr, generation)) {
                 trace_multifd_xbzrle_decode_cache_miss(p->id, i);
+                trace_multifd_xbzrle_decode_cache_miss_detail(
+                    p->id, i, cache_addr,
+                    cache_get_slot_addr(p->xbzrle.cache, cache_addr),
+                    cache_get_slot_age(p->xbzrle.cache, cache_addr),
+                    generation);
                 error_setg(errp,
                            "multifd %u: xbzrle cache miss for delta page %d",
                            p->id, i);

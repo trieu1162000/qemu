@@ -171,3 +171,13 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
 
     return 0;
 }
+
+uint64_t cache_get_slot_addr(const PageCache *cache, uint64_t addr)
+{
+    return cache_get_by_addr(cache, addr)->it_addr;
+}
+
+uint64_t cache_get_slot_age(const PageCache *cache, uint64_t addr)
+{
+    return cache_get_by_addr(cache, addr)->it_age;
+}

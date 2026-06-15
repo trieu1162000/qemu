@@ -71,4 +71,15 @@ uint8_t *get_cached_data(const PageCache *cache, uint64_t addr);
 int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
                  uint64_t current_age);
 
+/**
+ * cache_get_slot_addr: Get the address stored at the slot for @addr.
+ * Returns -1 if empty.
+ */
+uint64_t cache_get_slot_addr(const PageCache *cache, uint64_t addr);
+
+/**
+ * cache_get_slot_age: Get the age of the entry at the slot for @addr.
+ */
+uint64_t cache_get_slot_age(const PageCache *cache, uint64_t addr);
+
 #endif

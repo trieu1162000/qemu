@@ -162,6 +162,7 @@ multifd_ram_xbzrle_skip(uint8_t id) "ch %u use_xbzrle=0"
 multifd_xbzrle_encode(uint8_t id, uint32_t hits, uint32_t misses, uint32_t overflows, uint32_t num) "ch %u hits=%u misses=%u overflows=%u normal=%u"
 multifd_xbzrle_decode_delta(uint8_t id, uint32_t index) "ch %u delta page %u"
 multifd_xbzrle_decode_cache_miss(uint8_t id, uint32_t index) "ch %u CACHE MISS page %u"
+multifd_xbzrle_decode_cache_miss_detail(uint8_t id, uint32_t index, uint64_t cache_addr, uint64_t slot_addr, uint64_t slot_age, uint32_t gen) "ch %u idx %u want_addr=0x%" PRIx64 " slot_addr=0x%" PRIx64 " slot_age=%" PRIu64 " gen=%u"
 
 # migration.c
 migrate_set_state(const char *new_state) "new state %s"

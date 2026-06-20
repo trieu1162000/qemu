@@ -402,3 +402,11 @@ cpu_throttle_dirty_sync(void) ""
 
 # block-active.c
 migration_block_activation(const char *name) "%s"
+
+# multifd-nocomp.c
+multifd_route_page(uint32_t nchannels, uint32_t channel) "nchannels=%u channel=%u"
+multifd_xbzrle_decision(uint8_t id, bool use_xbzrle, uint32_t cache_entries, bool skip) "channel %u use=%u cache_entries=%u skip=%u"
+multifd_ram_save_packet(uint8_t id, uint32_t normal_num, uint32_t zero_num) "channel %u normal=%u zero=%u"
+
+# multifd-xbzrle.c
+multifd_xbzrle_encode_result(uint8_t id, uint32_t normal_pages, uint64_t hits, uint64_t misses, uint64_t overflows, uint32_t data_size) "channel %u pages=%u hits=%" PRIu64 " misses=%" PRIu64 " overflows=%" PRIu64 " data_size=%u"

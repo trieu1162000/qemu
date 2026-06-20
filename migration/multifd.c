@@ -115,6 +115,7 @@ void multifd_send_data_clear(MultiFDSendData *data)
         multifd_send_data_clear_device_state(&data->u.device_state);
         break;
     default:
+        data->u.ram.num = 0;
         /* Nothing to do */
         break;
     }
@@ -379,6 +380,7 @@ bool multifd_send(MultiFDSendData **send_data)
          * Lockless read to p->pending_job is safe, because only multifd
          * sender thread can clear it.
          */
+        fprintf(stderr, "DBG_JOB_CHECK p=%d pending=%d\n", i, qatomic_read(&p->pending_job));
         if (qatomic_read(&p->pending_job) == false) {
             next_channel = (i + 1) % thread_count;
             break;
@@ -728,6 +730,7 @@ static void *multifd_send_thread(void *opaque)
     bool use_packets = multifd_use_packets();
 
     trace_multifd_send_thread_start(p->id);
+    fprintf(stderr, "DBG_THREAD p=%d started\n", p->id);
     rcu_register_thread();
 
     if (use_packets) {
@@ -765,6 +768,7 @@ static void *multifd_send_thread(void *opaque)
                 write_flags_masked |= QIO_CHANNEL_WRITE_FLAG_ZERO_COPY;
             } else {
                 ret = multifd_send_state->ops->send_prepare(p, &local_err);
+                fprintf(stderr, "DBG_THREAD p=%d pages=%u normal=%u zeropages=%d\n", p->id, p->data->u.ram.num, p->data->u.ram.normal_num, p->data->u.ram.num - p->data->u.ram.normal_num);
                 if (ret != 0) {
                     break;
                 }

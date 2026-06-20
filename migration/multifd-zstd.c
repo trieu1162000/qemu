@@ -114,7 +114,6 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
     MultiFDPages_t *pages = &p->data->u.ram;
     struct zstd_data *z = p->compress_data;
     bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache &&
-                      !p->data->redirected &&
                       p->xbzrle.num_cache_entries >= XBZRLE_MIN_CACHE_ENTRIES;
     int ret;
     uint32_t i;
@@ -151,7 +150,7 @@ static int multifd_zstd_send_prepare(MultiFDSendParams *p, Error **errp)
                        p->id, ZSTD_getErrorName(ret));
             return -1;
         }
-        goto fill_iov:
+        goto fill_iov;
     }
 
     z->out.dst = z->zbuff;
@@ -203,9 +202,7 @@ out:
         p->flags |= MULTIFD_FLAG_XBZRLE;
     }
     multifd_send_fill_packet(p);
-    if (p->flags & MULTIFD_FLAG_XBZRLE) {
-        multifd_xbzrle_write_ext(p);
-    }
+
     return 0;
 }
 

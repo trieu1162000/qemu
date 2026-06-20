@@ -86,6 +86,7 @@ void multifd_xbzrle_state_free(MultiFDXBZRLEState *s)
 
 void multifd_xbzrle_encode_pages(MultiFDSendParams *p)
 {
+    fprintf(stderr, "DBG ENCODE p=%d normal_num=%u\n", p->id, p->data->u.ram.normal_num);
     MultiFDPages_t *pages = &p->data->u.ram;
     uint32_t page_size = multifd_ram_page_size();
     uint32_t page_count = multifd_ram_page_count();
@@ -134,6 +135,9 @@ void multifd_xbzrle_encode_pages(MultiFDSendParams *p)
     }
 
     p->next_packet_size = data_offset;
+    fprintf(stderr, "DBG XBZRLE p=%d pages=%u hits=%lu misses=%lu overflows=%lu data_size=%u\n",
+        p->id, p->data->u.ram.normal_num, p->xbzrle.cache_hits,
+        p->xbzrle.cache_misses, p->xbzrle.overflows, p->next_packet_size);
 }
 
 int multifd_xbzrle_decode_pages(MultiFDRecvParams *p, Error **errp)

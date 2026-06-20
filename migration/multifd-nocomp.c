@@ -40,7 +40,8 @@ static uint32_t gpa_hash(ram_addr_t addr, uint32_t n)
     if (n <= 1) {
         return 0;
     }
-    return (uint32_t)((addr * KNUTH_MULTIPLICATIVE) % n);
+    uint32_t page_number = addr / multifd_ram_page_size();
+    return (uint32_t)((page_number * KNUTH_MULTIPLICATIVE) % n);
 }
 
 /*
@@ -61,7 +62,9 @@ static int route_page(RAMBlock *block, ram_addr_t offset)
         return 0;
     }
 
-    return (int)gpa_hash(offset, nchannels);
+    int ch = (int)gpa_hash(offset, nchannels);
+    trace_multifd_route_page(nchannels, ch);
+    return ch;
 }
 
 void multifd_ram_payload_alloc(MultiFDPages_t *pages)
@@ -124,16 +127,12 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
     }
 
     if (migrate_xbzrle()) {
-        uint32_t nchannels = migrate_multifd_channels();
         uint64_t total_cache = migrate_xbzrle_cache_size();
         uint64_t cache_size;
 
         /* Distribute cache equally across all channels */
-        if (nchannels <= 1) {
-            cache_size = total_cache;
-        } else {
-            cache_size = total_cache / nchannels;
-        }
+        /* Each channel gets the full cache for better hit rate */
+        cache_size = total_cache;
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
             g_free(p->iov);
@@ -177,12 +176,15 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
 {
     bool use_zero_copy_send = migrate_zero_copy_send();
     bool use_xbzrle = migrate_xbzrle() && p->xbzrle.cache &&
-                      !p->data->redirected &&
                       p->xbzrle.num_cache_entries >= XBZRLE_MIN_CACHE_ENTRIES;
     MultiFDPages_t *pages = &p->data->u.ram;
     int ret;
 
     multifd_send_zero_page_detect(p);
+    fprintf(stderr, "DBG PREPARE p=%d normal=%u zero=%u use=%d cache=%p entries=%u dirty_sync=%lu\n",
+        p->id, pages->normal_num, pages->num - pages->normal_num,
+        use_xbzrle, (void *)p->xbzrle.cache, p->xbzrle.num_cache_entries,
+        (unsigned long)qatomic_read(&mig_stats.dirty_sync_count));
 
     if (migrate_mapped_ram()) {
         multifd_send_prepare_iovs(p);
@@ -241,16 +243,12 @@ static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
     p->iov = g_new0(struct iovec, page_count);
 
     if (migrate_xbzrle()) {
-        uint32_t nchannels = migrate_multifd_channels();
         uint64_t total_cache = migrate_xbzrle_cache_size();
         uint64_t cache_size;
 
         /* Mirror the same equal distribution as the sender. */
-        if (nchannels <= 1) {
-            cache_size = total_cache;
-        } else {
-            cache_size = total_cache / nchannels;
-        }
+        /* Each channel gets the full cache for better hit rate */
+        cache_size = total_cache;
         if (multifd_xbzrle_state_alloc(&p->xbzrle, cache_size,
                                        page_count, errp)) {
             g_free(p->iov);

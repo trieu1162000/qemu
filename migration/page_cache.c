@@ -21,7 +21,7 @@
 #include "trace.h"
 
 /* the page in cache will not be replaced in two cycles */
-#define CACHED_PAGE_LIFETIME 2
+#define CACHED_PAGE_LIFETIME 0
 
 typedef struct CacheItem CacheItem;
 
@@ -83,6 +83,20 @@ PageCache *cache_init(uint64_t new_size, size_t page_size, Error **errp)
     }
 
     return cache;
+}
+
+int cache_prealloc(PageCache *cache)
+{
+    for (size_t i = 0; i < cache->max_num_items; i++) {
+        if (!cache->page_cache[i].it_data) {
+            cache->page_cache[i].it_data = g_try_malloc(cache->page_size);
+            if (!cache->page_cache[i].it_data) {
+                return -1;
+            }
+            cache->num_items++;
+        }
+    }
+    return 0;
 }
 
 void cache_fini(PageCache *cache)
@@ -149,7 +163,7 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
     /* actual update of entry */
     it = cache_get_by_addr(cache, addr);
 
-    if (it->it_data && it->it_addr != addr &&
+    if (it->it_data && it->it_addr != addr && it->it_addr != (uint64_t)-1 &&
         it->it_age + CACHED_PAGE_LIFETIME > current_age) {
         /* the cache page is fresh, don't replace it */
         return -1;

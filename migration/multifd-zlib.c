@@ -17,6 +17,8 @@
 #include "exec/target_page.h"
 #include "qapi/error.h"
 #include "migration.h"
+#include "migration-stats.h"
+#include "ram.h"
 #include "trace.h"
 #include "options.h"
 #include "multifd.h"

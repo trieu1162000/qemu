@@ -77,6 +77,36 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
             g_free(p->iov);
             return -1;
         }
+
+        /* Pre-warm XBZRLE cache from current RAM snapshot to improve early
+         * delta hit-rate. Iterate RAM blocks and insert pages until the
+         * per-channel cache capacity is reached. */
+        {
+            size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
+            size_t inserted = 0;
+            RAMBlock *rb;
+            uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
+            fprintf(stderr, "DBG XBZRLE_PREWARM start inserts=%zu\n", max_inserts);
+
+            RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
+                if (!rb->host) {
+                    continue;
+                }
+                for (unsigned long off = 0;
+                     off < rb->max_length && inserted < max_inserts;
+                     off += qemu_target_page_size()) {
+                    uint8_t *host = rb->host + off;
+                    uint64_t cache_addr = rb->offset + off;
+                    if (cache_insert(p->xbzrle.cache, cache_addr, host, gen) == 0) {
+                        inserted++;
+                    }
+                }
+                if (inserted >= max_inserts) {
+                    break;
+                }
+            }
+            fprintf(stderr, "DBG XBZRLE_PREWARM done inserted=%zu\n", inserted);
+        }
     }
 
     /* Needs 2 IOVs, one for packet header and one for compressed data */

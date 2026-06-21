@@ -163,17 +163,6 @@ static int cache_find_slot(const PageCache *cache, uint64_t addr)
     return -1;
 }
 
-static CacheItem *cache_get_by_addr(const PageCache *cache, uint64_t addr)
-{
-    int idx = cache_find_slot(cache, addr);
-    if (idx >= 0) {
-        return &cache->page_cache[idx];
-    }
-    /* Return first way in the set as a hint for insertion */
-    size_t set = cache_get_cache_pos(cache, addr);
-    return &cache->page_cache[set * cache->num_ways];
-}
-
 uint8_t *get_cached_data(const PageCache *cache, uint64_t addr)
 {
     int idx = cache_find_slot(cache, addr);

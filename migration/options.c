@@ -49,7 +49,7 @@
 #define DEFAULT_MIGRATE_MAX_CPU_THROTTLE 99
 
 /* Migration XBZRLE default cache size */
-#define DEFAULT_MIGRATE_XBZRLE_CACHE_SIZE (64 * 1024 * 1024)
+#define DEFAULT_MIGRATE_XBZRLE_CACHE_SIZE (1ULL * 1024 * 1024 * 1024) /* 1 GiB: ~262144 pages @4KiB */
 
 /* The delay time (in ms) between two COLO checkpoints */
 #define DEFAULT_MIGRATE_X_CHECKPOINT_DELAY (200 * 100)

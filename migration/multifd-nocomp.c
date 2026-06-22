@@ -141,7 +141,9 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         }
 
         /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages */
-        {
+        /* Only pre-warm once to avoid parallel heavy allocation from each
+         * channel thread. Run pre-warm only on channel 0. */
+        if (p->id == 0) {
             size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
             size_t inserted = 0;
             RAMBlock *rb;
@@ -165,6 +167,7 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
             }
             fprintf(stderr, "DBG XBZRLE_PREWARM done inserted=%zu\n", inserted);
         }
+    }
     }
 
     return 0;

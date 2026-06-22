@@ -83,7 +83,10 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
         /* Pre-warm XBZRLE cache from current RAM snapshot to improve early
          * delta hit-rate. Iterate RAM blocks and insert pages until the
          * per-channel cache capacity is reached. */
-        {
+        /* Only pre-warm once to avoid parallel heavy allocation from each
+         * channel thread (which caused resource pressure). Run pre-warm only
+         * on channel 0. */
+        if (p->id == 0) {
             size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
             size_t inserted = 0;
             RAMBlock *rb;

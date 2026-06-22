@@ -21,7 +21,7 @@
 #include "trace.h"
 
 /* the page in cache will not be replaced in two cycles */
-#define CACHED_PAGE_LIFETIME 1
+#define CACHED_PAGE_LIFETIME 0 /* allow immediate replacement when generation is static */
 
 #define CACHE_WAYS 4
 

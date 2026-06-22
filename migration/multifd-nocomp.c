@@ -168,7 +168,6 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
             fprintf(stderr, "DBG XBZRLE_PREWARM done inserted=%zu\n", inserted);
         }
     }
-    }
 
     return 0;
 }

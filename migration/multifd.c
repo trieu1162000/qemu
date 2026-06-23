@@ -167,6 +167,12 @@ static int multifd_send_initial_packet(MultiFDSendParams *p, Error **errp)
     msg.id = p->id;
     memcpy(msg.uuid, &qemu_uuid.data, sizeof(msg.uuid));
 
+    /* Export sender generation so receiver can pre-warm with identical age */
+    if (migrate_xbzrle()) {
+        uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
+        msg.unused2[0] = cpu_to_be64(gen);
+    }
+
     ret = qio_channel_write_all(p->c, (char *)&msg, size, errp);
     if (ret != 0) {
         return -1;
@@ -175,7 +181,7 @@ static int multifd_send_initial_packet(MultiFDSendParams *p, Error **errp)
     return 0;
 }
 
-static int multifd_recv_initial_packet(QIOChannel *c, Error **errp)
+static int multifd_recv_initial_packet(QIOChannel *c, uint64_t *genp, Error **errp)
 {
     MultiFDInit_t msg;
     int ret;
@@ -215,6 +221,11 @@ static int multifd_recv_initial_packet(QIOChannel *c, Error **errp)
         error_setg(errp, "multifd: received channel id %u exceeds "
                    "channel count %u", msg.id, migrate_multifd_channels());
         return -1;
+    }
+
+    if (genp) {
+        /* extract sender-provided generation if present */
+        *genp = be64_to_cpu(msg.unused2[0]);
     }
 
     return msg.id;
@@ -839,6 +850,7 @@ static void *multifd_send_thread(void *opaque)
 out:
     if (ret) {
         assert(local_err);
+        fprintf(stderr, "DBG_MULTIFD_SEND_THREAD_ERROR p=%d: %s\n", p->id, error_get_pretty(local_err));
         trace_multifd_send_error(p->id);
         multifd_send_error_propagate(local_err);
     }
@@ -964,6 +976,7 @@ out:
     }
 
     trace_multifd_new_send_channel_async_error(p->id, local_err);
+    fprintf(stderr, "DBG_MULTIFD_NEW_SEND_CHANNEL_ERROR p=%d: %s\n", p->id, error_get_pretty(local_err));
     multifd_send_error_propagate(local_err);
     /*
      * For error cases (TLS or non-TLS), IO channel is always freed here
@@ -1517,6 +1530,7 @@ static void *multifd_recv_thread(void *opaque)
     }
 
     if (local_err) {
+        fprintf(stderr, "DBG_MULTIFD_RECV_THREAD_ERROR p=%d: %s\n", p->id, error_get_pretty(local_err));
         multifd_recv_terminate_threads(local_err);
     }
 
@@ -1619,9 +1633,11 @@ bool multifd_recv_new_channel(QIOChannel *ioc, Error **errp)
     bool use_packets = multifd_use_packets();
     int id;
 
+    uint64_t peer_gen = 0;
     if (use_packets) {
-        id = multifd_recv_initial_packet(ioc, &local_err);
+        id = multifd_recv_initial_packet(ioc, &peer_gen, &local_err);
         if (id < 0) {
+            fprintf(stderr, "DBG_MULTIFD_RECV_NEW_CHANNEL_ERROR: %s\n", error_get_pretty(local_err));
             multifd_recv_terminate_threads(error_copy(local_err));
             error_propagate_prepend(errp, local_err,
                                     "failed to receive packet"
@@ -1644,6 +1660,35 @@ bool multifd_recv_new_channel(QIOChannel *ioc, Error **errp)
     }
     p->c = ioc;
     object_ref(OBJECT(ioc));
+
+    /* If sender provided a generation, pre-warm receiver-side cache now using it */
+    if (use_packets && migrate_xbzrle() && peer_gen != 0) {
+        size_t max_inserts = 0;
+        size_t inserted = 0;
+        RAMBlock *rb;
+        uint32_t gen32 = (uint32_t)peer_gen;
+
+        if (p->xbzrle.cache) {
+            max_inserts = (size_t)p->xbzrle.num_cache_entries;
+        }
+        /* If we have a reasonable capacity, iterate RAM and insert until filled */
+        if (max_inserts > 0 && p->id == 0) {
+            size_t target = max_inserts;
+            fprintf(stderr, "DBG XBZRLE_PREWARM start receiver gen=%u inserts=%zu\n", gen32, target);
+            RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
+                if (!rb->host) continue;
+                for (unsigned long off = 0; off < rb->max_length && inserted < target; off += qemu_target_page_size()) {
+                    uint8_t *host = rb->host + off;
+                    uint64_t cache_addr = rb->offset + off;
+                    if (cache_insert(p->xbzrle.cache, cache_addr, host, gen32) == 0) {
+                        inserted++;
+                    }
+                }
+                if (inserted >= target) break;
+            }
+            fprintf(stderr, "DBG XBZRLE_PREWARM done receiver inserted=%zu\n", inserted);
+        }
+    }
 
     p->thread_created = true;
     qemu_thread_create(&p->thread, p->name, multifd_recv_thread, p,

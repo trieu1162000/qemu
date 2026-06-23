@@ -58,6 +58,13 @@ bool cache_is_cached(const PageCache *cache, uint64_t addr,
 uint8_t *get_cached_data(const PageCache *cache, uint64_t addr);
 
 /**
+ * page_cache_get_pos: return the cache index position for an addr
+ *
+ * Useful for diagnostics/logging.
+ */
+size_t page_cache_get_pos(const PageCache *cache, uint64_t addr);
+
+/**
  * cache_insert: insert the page into the cache. the page cache
  * will dup the data on insert. the previous value will be overwritten
  *

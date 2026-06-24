@@ -91,6 +91,10 @@ bool multifd_queue_page(RAMBlock *block, ram_addr_t offset);
 bool multifd_recv(void);
 MultiFDRecvData *multifd_get_recv_data(void);
 
+/* Maps a page address (in GPA) to a target multifd channel [0, nchannels).
+ * All codecs use this to route pre-warmed pages to the correct channel. */
+uint32_t multifd_page_channel(ram_addr_t addr, uint32_t nchannels);
+
 /* Multiple fd's */
 
 #define MULTIFD_MAGIC 0x11223344U

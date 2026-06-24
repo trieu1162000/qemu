@@ -89,23 +89,26 @@ static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
             return -1;
         }
 
-        /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages */
-        /* Only pre-warm once to avoid parallel heavy allocation from each
-         * channel thread. Run pre-warm only on channel 0. */
-        if (p->id == 0) {
+        /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages.
+         * Each channel pre-warms only pages that hash to it. */
+        {
             size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
             size_t inserted = 0;
+            uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM start inserts=%zu\n", max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {
                     continue;
                 }
                 for (unsigned long off = 0; off < rb->max_length && inserted < max_inserts; off += qemu_target_page_size()) {
-                    uint8_t *host = rb->host + off;
                     uint64_t cache_addr = rb->offset + off;
+                    if (multifd_page_channel(cache_addr, nch) != p->id) {
+                        continue;
+                    }
+                    uint8_t *host = rb->host + off;
                     if (cache_insert(p->xbzrle.cache, cache_addr, host, gen) == 0) {
                         inserted++;
                     }
@@ -114,7 +117,7 @@ static int multifd_zstd_send_setup(MultiFDSendParams *p, Error **errp)
                     break;
                 }
             }
-            fprintf(stderr, "DBG XBZRLE_PREWARM done inserted=%zu\n", inserted);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d done inserted=%zu\n", p->id, inserted);
         }
     }
 
@@ -287,23 +290,26 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
             return -1;
         }
 
-        /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages */
-        /* Only pre-warm once to avoid parallel heavy allocation from each
-         * channel thread. Run pre-warm only on channel 0. */
-        if (p->id == 0) {
+        /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages.
+         * Each channel pre-warms only pages that hash to it. */
+        {
             size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
             size_t inserted = 0;
+            uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM start inserts=%zu\n", max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {
                     continue;
                 }
                 for (unsigned long off = 0; off < rb->max_length && inserted < max_inserts; off += qemu_target_page_size()) {
-                    uint8_t *host = rb->host + off;
                     uint64_t cache_addr = rb->offset + off;
+                    if (multifd_page_channel(cache_addr, nch) != p->id) {
+                        continue;
+                    }
+                    uint8_t *host = rb->host + off;
                     if (cache_insert(p->xbzrle.cache, cache_addr, host, gen) == 0) {
                         inserted++;
                     }
@@ -312,7 +318,7 @@ static int multifd_zstd_recv_setup(MultiFDRecvParams *p, Error **errp)
                     break;
                 }
             }
-            fprintf(stderr, "DBG XBZRLE_PREWARM done inserted=%zu\n", inserted);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d done inserted=%zu\n", p->id, inserted);
         }
     }
 

@@ -20,8 +20,10 @@
 #include "page_cache.h"
 #include "trace.h"
 
-/* the page in cache will not be replaced in two cycles */
-#define CACHED_PAGE_LIFETIME 0 /* allow immediate replacement when generation is static */
+/* the page in cache will not be replaced in N cycles; with softer eviction
+ * (see cache_insert's fallback path) this is a soft guarantee that biases
+ * the replacement policy toward retaining recently-hit entries. */
+#define CACHED_PAGE_LIFETIME 4
 
 #define CACHE_WAYS 4
 
@@ -267,12 +269,19 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
         }
     }
     if (!any_replaceable) {
-        /* Do not replace very recent entries */
-        CacheItem *it = &cache->page_cache[base];
-        fprintf(stderr, "DBG PAGECACHE SKIP_REPLACE addr=0x%lx pos=%zu stored_addr=0x%lx stored_age=%lu cur_age=%lu\n",
-                (unsigned long)addr, set, (unsigned long)it->it_addr,
-                (unsigned long)it->it_age, (unsigned long)current_age);
-        return -1;
+        /* All entries are fresh (within LIFETIME). Still must make room.
+         * Evict the entry with the lowest age (LRU approximation): least
+         * recently hit / inserted.  Frequently-accessed pages keep their
+         * age bumped via cache_is_cached, so they tend to survive.
+         * This prevents hot-page sets from permanently blocking new
+         * entries (the original SKIP_REPLACE pathology). */
+        for (size_t w = 0; w < cache->num_ways; w++) {
+            CacheItem *it = &cache->page_cache[base + w];
+            if (it->it_age < min_age) {
+                min_age = it->it_age;
+                victim = w;
+            }
+        }
     }
 
     /* Replace victim */

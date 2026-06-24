@@ -1671,22 +1671,25 @@ bool multifd_recv_new_channel(QIOChannel *ioc, Error **errp)
         if (p->xbzrle.cache) {
             max_inserts = (size_t)p->xbzrle.num_cache_entries;
         }
-        /* If we have a reasonable capacity, iterate RAM and insert until filled */
-        if (max_inserts > 0 && p->id == 0) {
+        /* Each channel pre-warms only pages that hash to it so every
+         * pre-warmed entry matches the route the sender will use. */
+        if (max_inserts > 0) {
             size_t target = max_inserts;
-            fprintf(stderr, "DBG XBZRLE_PREWARM start receiver gen=%u inserts=%zu\n", gen32, target);
+            uint32_t nch = migrate_multifd_channels();
+            fprintf(stderr, "DBG XBZRLE_PREWARM start receiver ch=%d gen=%u inserts=%zu\n", p->id, gen32, target);
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) continue;
                 for (unsigned long off = 0; off < rb->max_length && inserted < target; off += qemu_target_page_size()) {
-                    uint8_t *host = rb->host + off;
                     uint64_t cache_addr = rb->offset + off;
+                    if (multifd_page_channel(cache_addr, nch) != p->id) continue;
+                    uint8_t *host = rb->host + off;
                     if (cache_insert(p->xbzrle.cache, cache_addr, host, gen32) == 0) {
                         inserted++;
                     }
                 }
                 if (inserted >= target) break;
             }
-            fprintf(stderr, "DBG XBZRLE_PREWARM done receiver inserted=%zu\n", inserted);
+            fprintf(stderr, "DBG XBZRLE_PREWARM done receiver ch=%d inserted=%zu\n", p->id, inserted);
         }
     }
 

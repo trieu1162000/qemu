@@ -254,11 +254,15 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
         }
     }
 
-    /* All slots occupied: pick oldest entry to replace unless all are fresh */
-    size_t victim = 0;
-    uint64_t min_age = (uint64_t)-1;
+    /* All slots occupied: pick oldest entry to replace unless all are fresh.
+     * Rotate the scan start by (current_age % num_ways) to avoid always
+     * evicting way 0 when ages are equal (same-generation entries). */
+    size_t start_way = (size_t)(current_age % cache->num_ways);
+    size_t victim = start_way;
+    uint64_t min_age = cache->page_cache[base + start_way].it_age;
     bool any_replaceable = false;
-    for (size_t w = 0; w < cache->num_ways; w++) {
+    for (size_t i = 0; i < cache->num_ways; i++) {
+        size_t w = (start_way + i) % cache->num_ways;
         CacheItem *it = &cache->page_cache[base + w];
         if (it->it_age + CACHED_PAGE_LIFETIME <= current_age) {
             any_replaceable = true;
@@ -273,9 +277,12 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
          * Evict the entry with the lowest age (LRU approximation): least
          * recently hit / inserted.  Frequently-accessed pages keep their
          * age bumped via cache_is_cached, so they tend to survive.
-         * This prevents hot-page sets from permanently blocking new
-         * entries (the original SKIP_REPLACE pathology). */
-        for (size_t w = 0; w < cache->num_ways; w++) {
+         * Starting the scan at the rotated position keeps evictions spread
+         * across all ways instead of always hammering way 0. */
+        min_age = cache->page_cache[base + start_way].it_age;
+        victim = start_way;
+        for (size_t i = 0; i < cache->num_ways; i++) {
+            size_t w = (start_way + i) % cache->num_ways;
             CacheItem *it = &cache->page_cache[base + w];
             if (it->it_age < min_age) {
                 min_age = it->it_age;

@@ -84,14 +84,19 @@ static int multifd_zlib_send_setup(MultiFDSendParams *p, Error **errp)
          * delta hit-rate. Iterate RAM blocks and insert pages until the
          * per-channel cache capacity is reached. */
         /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages.
-         * Each channel pre-warms only pages that hash to it. */
+         * Each channel pre-warms only pages that hash to it.
+         *
+         * Fill at most 50% to avoid self-eviction: with a 4-way set-associative
+         * cache, filling 100% causes early entries to be evicted by later ones
+         * in the same set before migration even starts. */
         {
-            size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
+            size_t capacity = (size_t)(cache_size / qemu_target_page_size());
+            size_t max_inserts = capacity / 2;
             size_t inserted = 0;
             uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d capacity=%zu max_inserts=%zu\n", p->id, capacity, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {
@@ -292,14 +297,19 @@ static int multifd_zlib_recv_setup(MultiFDRecvParams *p, Error **errp)
         }
 
         /* Pre-warm XBZRLE cache: each channel pre-warms only pages
-         * that hash to it via multifd_page_channel. */
+         * that hash to it via multifd_page_channel.
+         *
+         * Fill at most 50% to avoid self-eviction: with a 4-way set-associative
+         * cache, filling 100% causes early entries to be evicted by later ones
+         * in the same set before migration even starts. */
         {
-            size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
+            size_t capacity = (size_t)(cache_size / qemu_target_page_size());
+            size_t max_inserts = capacity / 2;
             size_t inserted = 0;
             uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d capacity=%zu max_inserts=%zu\n", p->id, capacity, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {

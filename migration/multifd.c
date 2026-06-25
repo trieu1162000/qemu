@@ -1663,20 +1663,21 @@ bool multifd_recv_new_channel(QIOChannel *ioc, Error **errp)
 
     /* If sender provided a generation, pre-warm receiver-side cache now using it */
     if (use_packets && migrate_xbzrle() && peer_gen != 0) {
-        size_t max_inserts = 0;
         size_t inserted = 0;
         RAMBlock *rb;
         uint32_t gen32 = (uint32_t)peer_gen;
 
+        size_t capacity = 0;
         if (p->xbzrle.cache) {
-            max_inserts = (size_t)p->xbzrle.num_cache_entries;
+            capacity = (size_t)p->xbzrle.num_cache_entries;
         }
         /* Each channel pre-warms only pages that hash to it so every
-         * pre-warmed entry matches the route the sender will use. */
-        if (max_inserts > 0) {
-            size_t target = max_inserts;
+         * pre-warmed entry matches the route the sender will use.
+         * Fill at most 50% to avoid self-eviction during pre-warm. */
+        size_t target = capacity / 2;
+        if (target > 0) {
             uint32_t nch = migrate_multifd_channels();
-            fprintf(stderr, "DBG XBZRLE_PREWARM start receiver ch=%d gen=%u inserts=%zu\n", p->id, gen32, target);
+            fprintf(stderr, "DBG XBZRLE_PREWARM start receiver ch=%d gen=%u capacity=%zu target=%zu\n", p->id, gen32, capacity, target);
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) continue;
                 for (unsigned long off = 0; off < rb->max_length && inserted < target; off += qemu_target_page_size()) {

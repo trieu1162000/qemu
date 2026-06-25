@@ -144,14 +144,22 @@ static int multifd_nocomp_send_setup(MultiFDSendParams *p, Error **errp)
         /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages.
          * Each channel pre-warms only pages that hash to it via
          * multifd_page_channel, so every pre-warmed entry is guaranteed
-         * to be looked up on this channel. */
+         * to be looked up on this channel.
+         *
+         * Fill at most 50% of the cache to avoid self-eviction during pre-warm:
+         * with a 4-way set-associative cache, filling 100% causes earlier
+         * entries to be evicted by later ones in the same set (hash collisions).
+         * At 50% fill, most sets have 1-2 empty ways, so pre-warmed entries
+         * survive into the migration phase instead of being evicted before
+         * the first encode packet runs. */
         {
-            size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
+            size_t capacity = (size_t)(cache_size / qemu_target_page_size());
+            size_t max_inserts = capacity / 2;
             size_t inserted = 0;
             uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d capacity=%zu max_inserts=%zu\n", p->id, capacity, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {
@@ -293,14 +301,22 @@ static int multifd_nocomp_recv_setup(MultiFDRecvParams *p, Error **errp)
         /* Pre-warm XBZRLE cache from current RAM snapshot to seed base pages.
          * Each channel pre-warms only pages that hash to it via
          * multifd_page_channel, so every pre-warmed entry is guaranteed
-         * to be looked up on this channel. */
+         * to be looked up on this channel.
+         *
+         * Fill at most 50% of the cache to avoid self-eviction during pre-warm:
+         * with a 4-way set-associative cache, filling 100% causes earlier
+         * entries to be evicted by later ones in the same set (hash collisions).
+         * At 50% fill, most sets have 1-2 empty ways, so pre-warmed entries
+         * survive into the migration phase instead of being evicted before
+         * the first encode packet runs. */
         {
-            size_t max_inserts = (size_t)(cache_size / qemu_target_page_size());
+            size_t capacity = (size_t)(cache_size / qemu_target_page_size());
+            size_t max_inserts = capacity / 2;
             size_t inserted = 0;
             uint32_t nch = migrate_multifd_channels();
             RAMBlock *rb;
             uint32_t gen = qatomic_read(&mig_stats.dirty_sync_count);
-            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d start inserts=%zu\n", p->id, max_inserts);
+            fprintf(stderr, "DBG XBZRLE_PREWARM ch=%d capacity=%zu max_inserts=%zu\n", p->id, capacity, max_inserts);
 
             RAMBLOCK_FOREACH_NOT_IGNORED(rb) {
                 if (!rb->host) {
